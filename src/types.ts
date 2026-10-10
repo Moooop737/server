@@ -1,5 +1,7 @@
 export type { Resource, Chunk, Embedding, Session, Message, CitationSource }
 
+// 时间字段是 API 视图：统一用 ISO 8601 字符串。
+// pg 驱动读回 timestamptz 是 Date 实例，由 Repository 适配器转 .toISOString()；deleted_at 为 NULL 时给 null。
 interface timestamp {
     created_at: string,
     updated_at: string,
@@ -32,6 +34,9 @@ interface Embedding extends timestamp {
     source_type: 'chunk'
     dimension: number
     model: string
+    // 端口层契约：传/收都是 number[]。
+    // halfvec 在 pg 里读回是字符串 "[1,2,3]"、写入需 '[1,2,3]' 字面量（或 setTypeParser）；
+    // number[] ↔ halfvec 字符串的转换归 Repository 适配器，不在端口暴露 pg 驱动细节。
     embedding: number[]
 }
 

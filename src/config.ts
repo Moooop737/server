@@ -23,6 +23,22 @@ const CHAT_KEY_BY_PROVIDER = {
   dashscope: 'DASHSCOPE_API_KEY',
 } as const
 
+// 解析整数型 env：缺省取 def；有值但非整数或越界则在启动期点名报错（延续 fail-fast，不让 NaN 溜到 listen）
+function numOrThrow(
+  raw: string | undefined,
+  name: string,
+  def: number,
+  min: number,
+  max: number,
+): number {
+  if (raw === undefined) return def
+  const v = Number(raw)
+  if (!Number.isInteger(v) || v < min || v > max) {
+    throw new ConfigError('E_CONFIG_INVALID', `${name} 需为 ${min}-${max} 的整数，收到: ${raw}`)
+  }
+  return v
+}
+
 // 从 process.env 读取并校验配置；缺必需项在启动阶段即抛错（fail-fast，FR-12/AD-8）
 export function loadConfig(): AppConfig {
   const get = (name: string): string | undefined => {
@@ -51,12 +67,14 @@ export function loadConfig(): AppConfig {
     throw new ConfigError('E_CONFIG_MISSING', `必需的环境变量缺失: ${missing.join(', ')}`)
   }
 
-  const dimsRaw = get('EMBEDDING_DIMENSIONS')
-  // 仅表示向当前 embedder 请求的输出维度（AD-4：存储不设维度上限，启动期不做合法性卡口）
-  const embeddingDimensions = dimsRaw ? Number(dimsRaw) : 1024
+  const embeddingDimensions = numOrThrow(get('EMBEDDING_DIMENSIONS'), 'EMBEDDING_DIMENSIONS', 1024, 1, 16000)
+  // AD-4：存储不设维度上限，启动期不做“必须 1024”卡口；但 P1 只建了 1024 那一档的 partial HNSW，
+  // 其他维度无索引→检索会静默退化顺序扫描（结果仍对、只是慢），故提醒一句。
+  if (embeddingDimensions !== 1024) {
+    console.warn(JSON.stringify({ code: 'W_EMBEDDING_DIM', message: `EMBEDDING_DIMENSIONS=${embeddingDimensions} 无对应 HNSW 索引，检索将退化顺序扫描` }))
+  }
 
-  const portRaw = get('PORT')
-  const port = portRaw ? Number(portRaw) : 3000
+  const port = numOrThrow(get('PORT'), 'PORT', 3000, 1, 65535)
 
   return {
     host: '127.0.0.1', // AD-8：仅本地监听

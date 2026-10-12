@@ -1,10 +1,10 @@
 import { Hono } from 'hono'
-import { IngestError, runIngest } from '../orchestration/ingest'
+import { IngestError, runIngest } from '../../orchestration/ingest'
 
 export { createResourcesTextRoute }
 
-import type { IngestDeps } from '../orchestration/ingest'
-import type { IngestInput } from '../pipeline/contracts'
+import type { IngestDeps } from '../../orchestration/ingest'
+import type { IngestInput } from '../../pipeline/contracts'
 
 function createResourcesTextRoute(Deps: IngestDeps): Hono {
   const app = new Hono()

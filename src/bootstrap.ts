@@ -6,18 +6,18 @@
 
 import { serve } from "@hono/node-server"
 import { Hono } from "hono"
-import { loadConfig, ConfigError } from "../config"
-import { createDbPool } from "../adapters/paradedb"
-import { OllamaEmbedder } from "../adapters/ollama-embedder"
-import { ParadeDbRepository } from "../adapters/paradedb-repository"
-import { LegacyChunker } from "./chunk/legacy"
-import { TextParser } from "./parse/text-parser"
+import { loadConfig, ConfigError } from "./config"
+import { createDbPool } from "./adapters/paradedb"
+import { OllamaEmbedder } from "./adapters/ollama-embedder"
+import { ParadeDbRepository } from "./adapters/paradedb-repository"
+import { LegacyChunker } from "./pipeline/chunk/legacy"
+import { TextParser } from "./pipeline/parse/text-parser"
 
 export { bootstrap, startServer }
 export type { Deps }
 
-import type { AppConfig } from "../config"
-import type { IngestDeps } from "../orchestration/ingest"
+import type { AppConfig } from "./config"
+import type { IngestDeps } from "./orchestration/ingest"
 
 interface Deps {
   config: AppConfig

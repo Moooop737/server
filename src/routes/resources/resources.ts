@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 
 export { createResourcesRoute }
 
-import type { IngestDeps } from '../orchestration/ingest'
+import type { IngestDeps } from '../../orchestration/ingest'
 
 function createResourcesRoute(Deps: IngestDeps): Hono {
   const app = new Hono()

@@ -1,3 +1,9 @@
+/**
+ * HTML 入库解析器 —— jsdom 解析 → Readability 抽正文 → turndown(+gfm) 转 Markdown。
+ * 标题优先级：<title> > Readability article.title。
+ * 解析前先 stripPageAnchors 删文档站标题旁的页内空锚点（零宽字符/# 构成，如 VitePress），否则混进正文。
+ */
+
 import { JSDOM } from 'jsdom'
 import { Readability } from '@mozilla/readability'
 import TurndownService from 'turndown'
@@ -28,7 +34,6 @@ export class HtmlParser implements Parser {
     }
 }
 
-// 文档站标题旁的页内锚点（文本只有零宽字符或井号，如 VitePress 的 [​](#x)）属噪音，解析前从 DOM 删除
 function stripPageAnchors(doc: Document): void {
     doc.querySelectorAll('a[href^="#"]').forEach((a) => {
         const text = (a.textContent ?? '').replace(/[\u200b\u200c\u200d\ufeff]/g, '').trim()

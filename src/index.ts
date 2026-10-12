@@ -1,76 +1,44 @@
-import { serve } from "@hono/node-server"
-import { Hono } from "hono"
-import { loadConfig, ConfigError, type AppConfig } from "./config"
-import { createDbPool, pingDb } from "./adapters/paradedb"
-import { pingOllama } from "./adapters/ollama"
-import { OllamaEmbedder } from "./adapters/ollama-embedder"
-import { ParadeDbRepository } from "./adapters/paradedb-repository"
-import { LegacyChunker } from "./pipeline/chunk/legacy"
-import { TextParser } from "./pipeline/parse/text-parser"
+import { bootstrap, startServer } from "./pipeline/bootstrap"
 import { createResourcesRoute } from "./routes/resources"
-import { cleanupInterruptedIngest } from "./pipeline/startup-cleanup"
+import { createHealthRoute, type HealthCheck } from "./routes/health"
+import { pingDb } from "./adapters/paradedb"
+import { ollamaHealthCheck, ollamaModelList, ollamaStatusList } from "./adapters/ollama"
 
-function bootstrapConfig(): AppConfig {
-  try {
-    return loadConfig()
-  } catch (err) {
-    const code = err instanceof ConfigError ? err.code : "E_CONFIG_UNKNOWN"
-    const message = err instanceof ConfigError ? err.message : String(err)
-    console.error(JSON.stringify({ code, message }))
-    process.exit(1)
-  }
-}
+// bootstrap 交出空 app + deps，路由在外面装配，全装配完再启动
+const { app, deps } = bootstrap()
 
-const config = bootstrapConfig()
+const base = deps.config.ollamaBaseUrl
 
-const app = new Hono()
-const pool = createDbPool(config.databaseUrl)
+// 把每个已接入的服务包成探针注册给 health；将来加服务 = 往这个数组加一项
+const healthChecks: HealthCheck[] = [
+  { name: 'db', ping: async () => ({ ok: await pingDb(deps.pool) }) },
+  { name: 'ollama', ping: async () => ({ ok: await ollamaHealthCheck(base) }) },
+  {
+    name: 'ollama_models',
+    ping: async () => {
+      const models = await ollamaModelList(base)
+      const emb = deps.config.embeddingModel
+      // Ollama name 带 tag（qwenembed:latest），裸名等价 :latest，按 base 或 'emb:' 前缀匹配
+      return {
+        ok: models.some((m) => m.name === emb || m.name.startsWith(`${emb}:`)),
+        detail: models.map((m) => m.name),
+      }
+    },
+  },
+  {
+    name: 'ollama_running',
+    ping: async () => {
+      const ps = await ollamaStatusList(base)
+      return {
+        ok: true,
+        detail: ps.map((m) => ({ name: m.name, expires_at: m.expires_at, size_vram: m.size_vram })),
+      }
+    },
+  },
+]
 
-const embedder = new OllamaEmbedder({
-  baseUrl: config.ollamaBaseUrl,
-  model: config.embeddingModel,
-  dimensions: config.embeddingDimensions,
-})
-const repo = new ParadeDbRepository(pool)
-const ingestDeps = {
-  parse: new TextParser(),
-  chunk: new LegacyChunker(),
-  embedder,
-  repo,
-  embeddingModel: config.embeddingModel,
-}
+app.route('/', createHealthRoute(healthChecks))
+app.route('/', createResourcesRoute(deps.ingestDeps))
+// 后续路由在此继续 app.route(...)
 
-app.route('/', createResourcesRoute(ingestDeps))
-
-app.get('/health', async (c) => {
-  const [db, ollama] = await Promise.all([
-    pingDb(pool),
-    pingOllama(config.ollamaBaseUrl),
-  ])
-  const ok = db && ollama
-  return c.json(
-    { status: ok ? 'ok' : 'degraded', checks: { db, ollama } },
-    ok ? 200 : 503,
-  )
-})
-
-async function bootstrap(): Promise<void> {
-  try {
-    const cleaned = await cleanupInterruptedIngest(pool)
-    if (cleaned.resources > 0) {
-      console.log(`启动清扫：${cleaned.resources} 条 processing 资源转为 failed(入库中断)`)
-    }
-  } catch (err) {
-    console.error(JSON.stringify({ code: 'E_CLEANUP', message: String(err) }))
-  }
-
-  serve({
-    fetch: app.fetch,
-    hostname: config.host,
-    port: config.port,
-  })
-
-  console.log('Server listening on http://' + config.host + ':' + config.port)
-}
-
-void bootstrap()
+void startServer(app, deps)

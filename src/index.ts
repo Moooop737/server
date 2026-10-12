@@ -3,6 +3,11 @@ import { Hono } from "hono"
 import { loadConfig, ConfigError, type AppConfig } from "./config"
 import { createDbPool, pingDb } from "./adapters/paradedb"
 import { pingOllama } from "./adapters/ollama"
+import { OllamaEmbedder } from "./adapters/ollama-embedder"
+import { ParadeDbRepository } from "./adapters/paradedb-repository"
+import { LegacyChunker } from "./pipeline/chunk/legacy"
+import { TextParser } from "./pipeline/parse/text-parser"
+import { createResourcesRoute } from "./routes/resources"
 import { cleanupInterruptedIngest } from "./pipeline/startup-cleanup"
 
 function bootstrapConfig(): AppConfig {
@@ -20,6 +25,22 @@ const config = bootstrapConfig()
 
 const app = new Hono()
 const pool = createDbPool(config.databaseUrl)
+
+const embedder = new OllamaEmbedder({
+  baseUrl: config.ollamaBaseUrl,
+  model: config.embeddingModel,
+  dimensions: config.embeddingDimensions,
+})
+const repo = new ParadeDbRepository(pool)
+const ingestDeps = {
+  parse: new TextParser(),
+  chunk: new LegacyChunker(),
+  embedder,
+  repo,
+  embeddingModel: config.embeddingModel,
+}
+
+app.route('/', createResourcesRoute(ingestDeps))
 
 app.get('/health', async (c) => {
   const [db, ollama] = await Promise.all([

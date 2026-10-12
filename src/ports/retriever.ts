@@ -1,4 +1,4 @@
-import type { Chunk } from '../types'
+import type { Chunk } from '../types/types'
 
 export interface Retriever {
   // 向量 HNSW + pg_search BM25 混合，按 score 降序

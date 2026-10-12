@@ -1,4 +1,4 @@
-import type { Resource, Chunk, Embedding, Session, Message } from '../types'
+import type { Resource, Chunk, Embedding, Session, Message } from '../types/types'
 
 export interface Repository {
   // ── Resource ──

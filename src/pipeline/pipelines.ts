@@ -1,10 +1,12 @@
 /**
  * 入库管线工厂 —— PipelineFactory.assemble(Recipe) 把策略名兑换成实例、捆 repo，产出一个数据无关的可执行对象 Pipeline。
- * run(KBData, Signal) 跑单条；batch(KBData[], Signal) 用同一台机器跑多条，每条独立（一条失败或抛出都不阻断其余，abort 后未开始的不再建行、也不出结果）。
+ * run(KBData, CallerSignal) 跑单条；batch(KBData[], CallerSignal) 用同一台机器跑多条，每条独立（一条失败或抛出都不阻断其余，abort 后未开始的不再建行、也不出结果）。
  * 生命周期：查重 → 建 processing 行(title 占位) → 登记 in-flight controller → fetch → parse → 回填真标题 → chunk → embed → 同事务写 chunk+向量并把行转 ready → finally 注销登记。
- * 建行之后的失败都留在那条行上(failed) 并带原因；建行之前的拒绝(查重命中)返回 resource:null。
+ * 建行之后的失败都留在那条行上(failed) 并带原因；建行之前的拒绝(查重命中/进来就已取消)返回 resource:null。
  * 取消信号的持有者是本管线，不是 HTTP 连接：runOne 自己 new AbortController 并按 resourceId 登记，任意请求都能通过 InflightRegistry.abort(id) 按下它；
  * 调用方另可传一个自己的信号（batch 的整批中止、未来 worker 的停机），两者任一触发即掐。客户端断连不再是取消来源。
+ * 取消延迟有下限：parse 与 chunk 是同步的，pg 写入也不吃 signal ⇒ 只能在异步边界上观测到取消，最坏要等当前那一段同步/写事务跑完（撤回多写的那一笔由写入后的复查负责）。
+ * 结果码：E_DUPLICATE 查重 / E_CANCELLED 取消 / E_TIMEOUT stage 超时 / E_RESOURCE_GONE 写入期间资源被删 / E_INGEST_FAILED 其余。
  * 硬约束：Signal 只喂 fetch/embed 这类长操作；fail() 落库改状态绝不复用 Signal（aborted signal 会连"失败留痕"一起杀掉）。
  * 依赖：contracts(类型) / ports(Repository,Embedder) / inflight(取消登记处) / recipes(注册表经构造注入)。
  */
@@ -43,6 +45,8 @@ class PipelineFactory {
     const model = Recipe.config.embeddingModel
 
     const runOne = async (Data: KBData, CallerSignal?: AbortSignal): Promise<IngestResult> => {
+      if (CallerSignal?.aborted) return { resource: null, chunkCount: 0, failure: { code: 'E_CANCELLED', reason: '入库取消' } }
+
       if (Data.url) {
         const dup = await repo.findActiveBySource(Data.url)
         if (dup) return { resource: null, chunkCount: 0, failure: { code: 'E_DUPLICATE', reason: '同 URL 已有 ready/processing 资源' } }
@@ -60,19 +64,29 @@ class PipelineFactory {
 
       // 取消开关由服务端持有：登记后才能被任意请求按下；调用方自带的信号（batch 整批中止/worker 停机）并进来，任一触发即掐
       const ctrl = new AbortController()
-      inflight.add(resource.id, ctrl)
       const Signal = CallerSignal ? AbortSignal.any([ctrl.signal, CallerSignal]) : ctrl.signal
 
-      const fail = async (Reason: string): Promise<IngestResult> => {
-        logError('E_INGEST_FAIL', new Error(`${resource.id} → ${Reason}`))
+      // 一次故障只留一行日志：code 给人分支、reason 进库、cause 只进日志。主动取消不算错误，用 log 级不用 error 级
+      const fail = async (Reason: string, Code = 'E_INGEST_FAILED', Cause?: unknown): Promise<IngestResult> => {
+        const line = JSON.stringify({ code: Code, resource_id: resource.id, reason: Reason, ...(Cause ? { cause: errMessage(Cause) } : {}) })
+        if (Code === 'E_INGEST_FAILED') console.error(line)
+        else console.log(line)
         await repo.deleteChunksByResource(resource.id).catch((err) => logError('E_FAIL_CLEAN', err))
         await repo.updateResourceStatus(resource.id, 'failed', Reason).catch((err) => logError('E_FAIL_MARK', err)) // 不复用 Signal
-        return { resource: { ...resource, status: 'failed', error_reason: Reason }, chunkCount: 0, failure: { code: 'E_INGEST_FAILED', reason: Reason } }
+        return { resource: { ...resource, status: 'failed', error_reason: Reason }, chunkCount: 0, failure: { code: Code, reason: Reason } }
       }
+
+      const cancelled = () => fail('入库取消', 'E_CANCELLED')
+      // 取消、超时、真错误三件事不能塌成同一个 reason：各 stage 自带 30s 超时，它炸时 Signal 并不会 abort
+      const failFrom = (Cause: unknown, Fallback: string) =>
+        Signal.aborted ? cancelled() : isTimeout(Cause) ? fail('操作超时', 'E_TIMEOUT', Cause) : fail(Fallback, 'E_INGEST_FAILED', Cause)
 
       const ctx: IngestContext = { data: Data }
       try {
+        inflight.add(resource.id, ctrl)
+
         await fetcher.run(ctx, Signal)
+        if (Signal.aborted) return await cancelled() // parse/chunk 是同步的，过了这个点就再也观测不到取消，直到它们跑完
         parser.run(ctx)
         const parsed = ctx.parsed
         if (!parsed || parsed.text.trim() === '') return await fail('解析后无正文')
@@ -85,18 +99,16 @@ class PipelineFactory {
         chunker.run(ctx)
         const plans = ctx.chunks ?? []
         if (plans.length === 0) return await fail('内容为空')
-        if (Signal.aborted) return await fail('入库取消')
+        if (Signal.aborted) return await cancelled()
 
         let vectors: number[][]
         try {
           vectors = await embedder.embed(plans.map((p) => p.content), { signal: Signal })
         } catch (err) {
-          if (Signal.aborted) return await fail('入库取消')
-          logError('E_EMBED', err)
-          return await fail('embedding_error')
+          return await failFrom(err, 'embedding_error')
         }
         if (vectors.length !== plans.length) return await fail('embedding_error')
-        if (Signal.aborted) return await fail('入库取消')
+        if (Signal.aborted) return await cancelled()
 
         try {
           const chunkCount = await repo.writeChunksWithEmbeddings(
@@ -104,18 +116,19 @@ class PipelineFactory {
             plans.map((p) => ({ chunk_index: p.chunk_index, content: p.content, start_offset: p.start_offset, end_offset: p.end_offset })),
             vectors.map((v) => ({ dimension: v.length, model, embedding: v })),
           )
+          // 写入不是可中断的：取消若落在 INSERT/UPDATE 期间，事务已提交成 ready，这里必须把那一笔撤回来
+          if (Signal.aborted) return await cancelled()
+
           const warning = thinPage(ctx.fetched?.raw, parsed.text)
           return { resource: { ...resource, status: 'ready', error_reason: null }, chunkCount, ...(warning ? { warning } : {}) }
         } catch (err) {
-          logError('E_EMBED_WRITE', err)
-          if (Signal.aborted) return await fail('入库取消')
-          return await fail('embedding_error')
+          if ((err as { code?: string }).code === 'E_RESOURCE_GONE') return await fail('已删除，写入中止', 'E_RESOURCE_GONE', err)
+          return await failFrom(err, 'embedding_error')
         }
       } catch (err) {
-        logError('E_INGEST', err)
-        return await fail(Signal.aborted ? '入库取消' : '入库失败')
+        return await failFrom(err, '入库失败')
       } finally {
-        inflight.remove(resource.id)
+        inflight.remove(resource.id, ctrl)
       }
     }
 
@@ -168,4 +181,9 @@ function errMessage(Err: unknown): string {
 
 function logError(Code: string, Err: unknown) {
   console.error(JSON.stringify({ code: Code, message: errMessage(Err) }))
+}
+
+// AbortSignal.timeout() 触发时抛的是 name='TimeoutError' 的 DOMException（不保证是 Error 子类，所以只取 name）
+function isTimeout(Err: unknown): boolean {
+  return typeof Err === 'object' && Err !== null && (Err as { name?: string }).name === 'TimeoutError'
 }

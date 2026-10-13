@@ -82,14 +82,14 @@ export class ParadeDbRepository implements Repository {
         reason?: string,
     ): Promise<void> {
         await this.pool.query(
-            `UPDATE resources SET status = $2, error_reason = $3, updated_at = now() WHERE id = $1`,
+            `UPDATE resources SET status = $2, error_reason = $3, updated_at = now() WHERE id = $1 AND deleted_at IS NULL`,
             [id, status, reason ?? null],
         )
     }
 
     async updateResourceTitle(Id: string, Title: string): Promise<void> {
         await this.pool.query(
-            `UPDATE resources SET title = $2, updated_at = now() WHERE id = $1`,
+            `UPDATE resources SET title = $2, updated_at = now() WHERE id = $1 AND deleted_at IS NULL`,
             [Id, Title],
         )
     }
@@ -118,9 +118,10 @@ export class ParadeDbRepository implements Repository {
             await client.query('BEGIN')
 
             const { rows: [res] } = await client.query(
-                `SELECT data_uri FROM resources WHERE id = $1`,
+                `SELECT data_uri FROM resources WHERE id = $1 AND deleted_at IS NULL`,
                 [ResourceId],
             )
+            if (!res) throw Object.assign(new Error(`资源行不存在或已删除，写入中止: ${ResourceId}`), { code: 'E_RESOURCE_GONE' })
             const resourceUri = res.data_uri as string
 
             const cValues: string[] = []
@@ -163,7 +164,7 @@ export class ParadeDbRepository implements Repository {
                 `UPDATE resources SET status = 'ready', error_reason = NULL, updated_at = now() WHERE id = $1 AND deleted_at IS NULL`,
                 [ResourceId],
             )
-            if (rowCount === 0) throw new Error('资源在写入期间已被删除，写入中止')
+            if (rowCount === 0) throw Object.assign(new Error(`资源在写入期间被删除，写入中止: ${ResourceId}`), { code: 'E_RESOURCE_GONE' })
 
             await client.query('COMMIT')
             return Chunks.length

@@ -6,9 +6,10 @@
  * 客户端断连**不再**是取消来源（run 不接 c.req.raw.signal），批量提交后关页面不影响入库。
  * fetcher/parser 由来源在此定死（url→http/html，content→passthrough/text）；chunker/embedder 可由 body 覆盖，
  * 缺省值是注册表里的**策略名**（'legacy' / 'qwenembed'）——与 PipelineConfig.embeddingModel（写进 embeddings.model 的模型标识）分属两套名字，别混用。
- * 失败映射：查重命中→409；建行后 failed→422（带 resource）；装配名不识别(E_UNKNOWN_STAGE)→400；
- * id 非法→400；资源不存在/已软删→404；没有可取消的任务→409 E_NOT_ABORTABLE；未预期→500。
- * 成功 201 可能带 warning（如「可能抓不全」），只是提示、不影响 ready 状态；abort 成功是 202（异步生效，行稍后才转 failed）。
+ * 失败映射：查重命中→409；建行后 failed→422（带 resource，failure.code 可为 E_CANCELLED / E_TIMEOUT / E_RESOURCE_GONE / E_INGEST_FAILED）；
+ * 装配名不识别(E_UNKNOWN_STAGE)→400；id 非 UUID→400 E_BAD_ID；资源不存在或已软删→404 E_NOT_FOUND；
+ * 无可取消任务→409 E_NOT_PROCESSING（状态不是 processing）/ 409 E_NOT_INFLIGHT（是 processing 但不在本进程登记里，重启遗留）；未预期→500。
+ * 成功：201 入库（可能带 warning，只是提示、不影响 ready 状态）；202 abort 已按下（异步生效）；204 软删；200 列表与分块。
  */
 
 import { Hono } from 'hono'
@@ -40,7 +41,10 @@ function createResourcesRoute(Deps: ResourcesRouteDeps): Hono {
     try {
       const current = await repo.getResource(id)
       if (!current) return c.json({ code: 'E_NOT_FOUND', message: '资源不存在或已删除' }, 404)
-      if (current.status === 'processing') inflight.abort(id) // 先掐任务再标删；顺序反了会给已删资源补写一批 chunks
+      if (current.status === 'processing') {
+        // 先掐任务再标删；顺序反了会给已删资源补写一批 chunks。按不下去（重启遗留/异进程）就自己把状态收口，别留一条永远 processing 的行
+        if (!inflight.abort(id)) await repo.updateResourceStatus(id, 'failed', '入库中断')
+      }
       return (await repo.softDeleteResource(id)) ? c.body(null, 204) : c.json({ code: 'E_NOT_FOUND', message: '资源不存在或已删除' }, 404)
     } catch (err) {
       console.error(JSON.stringify({ code: 'E_DELETE', message: String(err) }))
@@ -57,12 +61,14 @@ function createResourcesRoute(Deps: ResourcesRouteDeps): Hono {
       const current = await repo.getResource(id)
       if (!current) return c.json({ code: 'E_NOT_FOUND', message: '资源不存在或已删除' }, 404)
       if (current.status !== 'processing') {
-        return c.json({ code: 'E_NOT_ABORTABLE', message: `资源已是 ${current.status}，没有可取消的任务` }, 409)
+        return c.json({ code: 'E_NOT_PROCESSING', message: `资源已是 ${current.status}，没有可取消的任务`, resource_id: id }, 409)
       }
       if (!inflight.abort(id)) {
-        return c.json({ code: 'E_NOT_ABORTABLE', message: '该任务不在本进程的入库登记里（服务可能重启过），改用 DELETE 清掉这条' }, 409)
+        // 读状态与按下之间任务可能自己跑完；重读一次再说清现在到底是什么状态，别猜成因
+        const now = await repo.getResource(id)
+        return c.json({ code: 'E_NOT_INFLIGHT', message: '该资源不在本进程的入库登记里', status: now?.status ?? 'gone', resource_id: id }, 409)
       }
-      return c.json({ message: '取消已按下，任务在当前长操作结束后转 failed(入库取消)' }, 202)
+      return c.json({ message: '取消已按下，任务不会转为已就绪，将在当前长操作结束后转 failed', resource_id: id }, 202)
     } catch (err) {
       console.error(JSON.stringify({ code: 'E_ABORT', message: String(err) }))
       return c.json({ code: 'E_ABORT', message: '取消失败' }, 500)
@@ -81,7 +87,13 @@ function createResourcesRoute(Deps: ResourcesRouteDeps): Hono {
 
   app.get('/:id/chunks', async (c) => {
     const id = c.req.param('id')
+    if (!uuidOk(id)) {
+      return c.json({ code: 'E_BAD_ID', message: 'id 需为 UUID' }, 400)
+    }
     try {
+      if (!(await repo.getResource(id))) {
+        return c.json({ code: 'E_NOT_FOUND', message: '资源不存在或已删除' }, 404)
+      }
       const chunks = await repo.getChunksByResource(id)
       return c.json({ chunks })
     } catch (err) {

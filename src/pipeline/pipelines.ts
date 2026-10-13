@@ -26,9 +26,11 @@ class IngestError extends Error {
 
 class PipelineFactory {
   private readonly reg: StageRegistry
+  private readonly inflight: InflightRegistry
 
-  constructor(Registry: StageRegistry) {
+  constructor(Registry: StageRegistry, Inflight: InflightRegistry) {
     this.reg = Registry
+    this.inflight = Inflight
   }
 
   assemble(Recipe: Recipe): Pipeline {
@@ -37,9 +39,10 @@ class PipelineFactory {
     const chunker = need(this.reg.chunker(Recipe.chunker, Recipe.config), 'chunker', Recipe.chunker)
     const embedder = need(this.reg.embedder(Recipe.embedder, Recipe.config), 'embedder', Recipe.embedder)
     const repo = Recipe.repo
+    const inflight = this.inflight
     const model = Recipe.config.embeddingModel
 
-    const runOne = async (Data: KBData, Signal?: AbortSignal): Promise<IngestResult> => {
+    const runOne = async (Data: KBData, CallerSignal?: AbortSignal): Promise<IngestResult> => {
       if (Data.url) {
         const dup = await repo.findActiveBySource(Data.url)
         if (dup) return { resource: null, chunkCount: 0, failure: { code: 'E_DUPLICATE', reason: '同 URL 已有 ready/processing 资源' } }
@@ -55,7 +58,13 @@ class PipelineFactory {
         status: 'processing',
       })
 
+      // 取消开关由服务端持有：登记后才能被任意请求按下；调用方自带的信号（batch 整批中止/worker 停机）并进来，任一触发即掐
+      const ctrl = new AbortController()
+      inflight.add(resource.id, ctrl)
+      const Signal = CallerSignal ? AbortSignal.any([ctrl.signal, CallerSignal]) : ctrl.signal
+
       const fail = async (Reason: string): Promise<IngestResult> => {
+        logError('E_INGEST_FAIL', new Error(`${resource.id} → ${Reason}`))
         await repo.deleteChunksByResource(resource.id).catch((err) => logError('E_FAIL_CLEAN', err))
         await repo.updateResourceStatus(resource.id, 'failed', Reason).catch((err) => logError('E_FAIL_MARK', err)) // 不复用 Signal
         return { resource: { ...resource, status: 'failed', error_reason: Reason }, chunkCount: 0, failure: { code: 'E_INGEST_FAILED', reason: Reason } }
@@ -76,18 +85,18 @@ class PipelineFactory {
         chunker.run(ctx)
         const plans = ctx.chunks ?? []
         if (plans.length === 0) return await fail('内容为空')
-        if (Signal?.aborted) return await fail('入库取消')
+        if (Signal.aborted) return await fail('入库取消')
 
         let vectors: number[][]
         try {
-          vectors = await embedder.embed(plans.map((p) => p.content), Signal ? { signal: Signal } : {})
+          vectors = await embedder.embed(plans.map((p) => p.content), { signal: Signal })
         } catch (err) {
-          if (Signal?.aborted) return await fail('入库取消')
+          if (Signal.aborted) return await fail('入库取消')
           logError('E_EMBED', err)
           return await fail('embedding_error')
         }
         if (vectors.length !== plans.length) return await fail('embedding_error')
-        if (Signal?.aborted) return await fail('入库取消')
+        if (Signal.aborted) return await fail('入库取消')
 
         try {
           const chunkCount = await repo.writeChunksWithEmbeddings(
@@ -99,11 +108,14 @@ class PipelineFactory {
           return { resource: { ...resource, status: 'ready', error_reason: null }, chunkCount, ...(warning ? { warning } : {}) }
         } catch (err) {
           logError('E_EMBED_WRITE', err)
+          if (Signal.aborted) return await fail('入库取消')
           return await fail('embedding_error')
         }
       } catch (err) {
         logError('E_INGEST', err)
-        return await fail(Signal?.aborted ? '入库取消' : '入库失败')
+        return await fail(Signal.aborted ? '入库取消' : '入库失败')
+      } finally {
+        inflight.remove(resource.id)
       }
     }
 

@@ -157,10 +157,13 @@ export class ParadeDbRepository implements Repository {
                 eParams,
             )
 
-            await client.query(
-                `UPDATE resources SET status = 'ready', error_reason = NULL, updated_at = now() WHERE id = $1`,
+            // 带 deleted_at 谓词：软删若发生在 embed 之后、写入期间，这里 rowCount=0 就整笔回滚，
+            // 杜绝给一条已删资源补写一批 chunks（那是检索会命中的孤儿数据）
+            const { rowCount } = await client.query(
+                `UPDATE resources SET status = 'ready', error_reason = NULL, updated_at = now() WHERE id = $1 AND deleted_at IS NULL`,
                 [ResourceId],
             )
+            if (rowCount === 0) throw new Error('资源在写入期间已被删除，写入中止')
 
             await client.query('COMMIT')
             return Chunks.length

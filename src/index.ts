@@ -12,6 +12,6 @@ import { createResourcesRoute } from './routes/resources/resources'
 const { app, deps } = bootstrap()
 
 app.route('/', createHealthRoute(createHealthProbes(deps.config, deps.pool)))
-app.route('/resources', createResourcesRoute({ repo: deps.repo, factory: deps.factory, pipelineConfig: deps.pipelineConfig }))
+app.route('/resources', createResourcesRoute({ repo: deps.repo, factory: deps.factory, inflight: deps.inflight, pipelineConfig: deps.pipelineConfig }))
 
 void startServer(app, deps)

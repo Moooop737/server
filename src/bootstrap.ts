@@ -1,8 +1,9 @@
 /**
  * 启动装配 —— bootstrap() 读配置、组装 Deps（含进程级入库管线工厂）、建空 app 并交出；startServer() 清理中断遗留后监听。
  * 缺必需 env → loadAppConfig() 打印错误并 process.exit(1)；cleanup 失败只记日志、不阻断启动。
- * Deps.factory 是进程级单例 PipelineFactory；pipelineConfig 由 AppConfig 派生，供路由装 Recipe（策略名 + repo + config）。
- * 依赖：config / paradedb / paradedb-repository / pipeline(recipes,pipelines)。
+ * Deps.factory 是进程级单例 PipelineFactory；Deps.inflight 是进程级取消登记处，工厂持有它、路由也用它（同一个实例，取消才按得到）。
+ * pipelineConfig 由 AppConfig 派生，供路由装 Recipe（策略名 + repo + config）。
+ * 依赖：config / paradedb / paradedb-repository / pipeline(recipes,inflight,pipelines)。
  */
 
 import { serve } from "@hono/node-server"
@@ -11,6 +12,7 @@ import { loadConfig, ConfigError } from "./config"
 import { createDbPool } from "./adapters/paradedb"
 import { ParadeDbRepository } from "./adapters/paradedb-repository"
 import { createStageRegistry } from "./pipeline/recipes"
+import { InflightRegistry } from "./pipeline/inflight"
 import { PipelineFactory } from "./pipeline/pipelines"
 
 export { bootstrap, startServer }
@@ -25,6 +27,7 @@ interface Deps {
   pool: ReturnType<typeof createDbPool>
   repo: Repository
   pipelineConfig: PipelineConfig
+  inflight: InflightRegistry
   factory: PipelineFactory
 }
 
@@ -52,8 +55,9 @@ function buildDeps(Config: AppConfig): Deps {
     embeddingModel: Config.embeddingModel,
     embeddingDimensions: Config.embeddingDimensions,
   }
-  const factory = new PipelineFactory(createStageRegistry())
-  return { config: Config, pool, repo, pipelineConfig, factory }
+  const inflight = new InflightRegistry()
+  const factory = new PipelineFactory(createStageRegistry(), inflight)
+  return { config: Config, pool, repo, pipelineConfig, inflight, factory }
 }
 
 interface CleanupResult {

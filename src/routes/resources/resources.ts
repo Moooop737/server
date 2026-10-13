@@ -1,10 +1,14 @@
 /**
- * 资源路由 —— GET / 列表、GET /:id/chunks 分块、POST / 入库（url 与 content 二选一）。
- * POST 只负责校验 body + 装配 Recipe/KBData，真正入库交 Factory.assemble(recipe).run(data, signal)。
+ * 资源路由 —— GET / 列表、GET /:id/chunks 分块、POST / 入库（url 与 content 二选一）、
+ * DELETE /:id 软删（处理中的先按下取消再删）、POST /:id/abort 只取消不删。
+ * POST 只负责校验 body + 装配 Recipe/KBData，真正入库交 Factory.assemble(recipe).run(data)。
+ * 取消开关由管线自己持有并按 resourceId 登记在 Deps.inflight，本路由只是按按钮的人之一；
+ * 客户端断连**不再**是取消来源（run 不接 c.req.raw.signal），批量提交后关页面不影响入库。
  * fetcher/parser 由来源在此定死（url→http/html，content→passthrough/text）；chunker/embedder 可由 body 覆盖，
  * 缺省值是注册表里的**策略名**（'legacy' / 'qwenembed'）——与 PipelineConfig.embeddingModel（写进 embeddings.model 的模型标识）分属两套名字，别混用。
- * 失败映射：查重命中→409；建行后 failed→422（带 resource）；装配名不识别(E_UNKNOWN_STAGE)→400；未预期→500。
- * 成功 201 可能带 warning（如「可能抓不全」），只是提示、不影响 ready 状态。
+ * 失败映射：查重命中→409；建行后 failed→422（带 resource）；装配名不识别(E_UNKNOWN_STAGE)→400；
+ * id 非法→400；资源不存在/已软删→404；没有可取消的任务→409 E_NOT_ABORTABLE；未预期→500。
+ * 成功 201 可能带 warning（如「可能抓不全」），只是提示、不影响 ready 状态；abort 成功是 202（异步生效，行稍后才转 failed）。
  */
 
 import { Hono } from 'hono'
@@ -14,33 +18,54 @@ export { createResourcesRoute }
 
 import type { Repository } from '../../ports/repository'
 import type { PipelineFactory } from '../../pipeline/pipelines'
+import type { InflightRegistry } from '../../pipeline/inflight'
 import type { Recipe, KBData, PipelineConfig } from '../../pipeline/contracts'
 
 interface ResourcesRouteDeps {
   repo: Repository
   factory: PipelineFactory
+  inflight: InflightRegistry
   pipelineConfig: PipelineConfig
 }
 
 function createResourcesRoute(Deps: ResourcesRouteDeps): Hono {
   const app = new Hono()
-  const { repo, factory, pipelineConfig } = Deps
+  const { repo, factory, inflight, pipelineConfig } = Deps
 
   app.delete('/:id', async (c) => {
     const id = c.req.param('id')
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    if (!uuidOk(id)) {
       return c.json({ code: 'E_BAD_ID', message: 'id 需为 UUID' }, 400)
     }
     try {
       const current = await repo.getResource(id)
       if (!current) return c.json({ code: 'E_NOT_FOUND', message: '资源不存在或已删除' }, 404)
-      if (current.status === 'processing') {
-        return c.json({ code: 'E_DELETE_PROCESSING', message: '资源处理中，等入库结束后再删' }, 409)
-      }
+      if (current.status === 'processing') inflight.abort(id) // 先掐任务再标删；顺序反了会给已删资源补写一批 chunks
       return (await repo.softDeleteResource(id)) ? c.body(null, 204) : c.json({ code: 'E_NOT_FOUND', message: '资源不存在或已删除' }, 404)
     } catch (err) {
       console.error(JSON.stringify({ code: 'E_DELETE', message: String(err) }))
       return c.json({ code: 'E_DELETE', message: '删除失败' }, 500)
+    }
+  })
+
+  app.post('/:id/abort', async (c) => {
+    const id = c.req.param('id')
+    if (!uuidOk(id)) {
+      return c.json({ code: 'E_BAD_ID', message: 'id 需为 UUID' }, 400)
+    }
+    try {
+      const current = await repo.getResource(id)
+      if (!current) return c.json({ code: 'E_NOT_FOUND', message: '资源不存在或已删除' }, 404)
+      if (current.status !== 'processing') {
+        return c.json({ code: 'E_NOT_ABORTABLE', message: `资源已是 ${current.status}，没有可取消的任务` }, 409)
+      }
+      if (!inflight.abort(id)) {
+        return c.json({ code: 'E_NOT_ABORTABLE', message: '该任务不在本进程的入库登记里（服务可能重启过），改用 DELETE 清掉这条' }, 409)
+      }
+      return c.json({ message: '取消已按下，任务在当前长操作结束后转 failed(入库取消)' }, 202)
+    } catch (err) {
+      console.error(JSON.stringify({ code: 'E_ABORT', message: String(err) }))
+      return c.json({ code: 'E_ABORT', message: '取消失败' }, 500)
     }
   })
 
@@ -118,7 +143,7 @@ function createResourcesRoute(Deps: ResourcesRouteDeps): Hono {
     }
 
     try {
-      const result = await factory.assemble(recipe).run(data, c.req.raw.signal)
+      const result = await factory.assemble(recipe).run(data)
       if (result.failure?.code === 'E_DUPLICATE') {
         return c.json({ code: 'E_DUPLICATE', message: result.failure.reason }, 409)
       }
@@ -134,4 +159,9 @@ function createResourcesRoute(Deps: ResourcesRouteDeps): Hono {
   })
 
   return app
+}
+
+// DELETE 与 abort 两个按 id 定位的端点共用这道形状校验：非法 id 直接 400，别放行到 pg 抛 invalid input syntax for type uuid
+function uuidOk(Id: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(Id)
 }

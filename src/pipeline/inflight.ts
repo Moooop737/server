@@ -19,10 +19,6 @@ class InflightRegistry {
     this.inflight.delete(Id)
   }
 
-  has(Id: string): boolean {
-    return this.inflight.has(Id)
-  }
-
   abort(Id: string): boolean {
     const ctrl = this.inflight.get(Id)
     if (!ctrl) return false

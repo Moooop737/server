@@ -1,28 +1,31 @@
 /**
- * 启动装配 —— bootstrap() 读配置、组装 Deps、建空 app 并交出；startServer() 清理中断遗留后监听。
+ * 启动装配 —— bootstrap() 读配置、组装 Deps（含进程级入库管线工厂）、建空 app 并交出；startServer() 清理中断遗留后监听。
  * 缺必需 env → loadAppConfig() 打印错误并 process.exit(1)；cleanup 失败只记日志、不阻断启动。
- * 依赖：config / paradedb / ollama-embedder / paradedb-repository / chunk / parse / orchestration。
+ * Deps.factory 是进程级单例 PipelineFactory；pipelineConfig 由 AppConfig 派生，供路由装 Recipe（策略名 + repo + config）。
+ * 依赖：config / paradedb / paradedb-repository / pipeline(recipes,pipelines)。
  */
 
 import { serve } from "@hono/node-server"
 import { Hono } from "hono"
 import { loadConfig, ConfigError } from "./config"
 import { createDbPool } from "./adapters/paradedb"
-import { OllamaEmbedder } from "./adapters/ollama-embedder"
 import { ParadeDbRepository } from "./adapters/paradedb-repository"
-import { LegacyChunker } from "./pipeline/chunk/legacy"
-import { TextParser } from "./pipeline/parse/text-parser"
+import { createStageRegistry } from "./pipeline/recipes"
+import { PipelineFactory } from "./pipeline/pipelines"
 
 export { bootstrap, startServer }
 export type { Deps }
 
 import type { AppConfig } from "./config"
-import type { IngestDeps } from "./orchestration/ingest"
+import type { Repository } from "./ports/repository"
+import type { PipelineConfig } from "./pipeline/contracts"
 
 interface Deps {
   config: AppConfig
   pool: ReturnType<typeof createDbPool>
-  ingestDeps: IngestDeps
+  repo: Repository
+  pipelineConfig: PipelineConfig
+  factory: PipelineFactory
 }
 
 function bootstrap(): { app: Hono; deps: Deps } {
@@ -43,20 +46,14 @@ function loadAppConfig(): AppConfig {
 
 function buildDeps(Config: AppConfig): Deps {
   const pool = createDbPool(Config.databaseUrl)
-  const embedder = new OllamaEmbedder({
-    baseUrl: Config.ollamaBaseUrl,
-    model: Config.embeddingModel,
-    dimensions: Config.embeddingDimensions,
-  })
   const repo = new ParadeDbRepository(pool)
-  const ingestDeps: IngestDeps = {
-    parse: new TextParser(),
-    chunk: new LegacyChunker(),
-    embedder,
-    repo,
+  const pipelineConfig: PipelineConfig = {
+    ollamaBaseUrl: Config.ollamaBaseUrl,
     embeddingModel: Config.embeddingModel,
+    embeddingDimensions: Config.embeddingDimensions,
   }
-  return { config: Config, pool, ingestDeps }
+  const factory = new PipelineFactory(createStageRegistry())
+  return { config: Config, pool, repo, pipelineConfig, factory }
 }
 
 interface CleanupResult {
@@ -103,7 +100,9 @@ async function cleanupInterruptedIngest(Pool: Deps['pool']): Promise<CleanupResu
     await client.query('COMMIT')
     return { resources: ids.length }
   } catch (err) {
-    await client.query('ROLLBACK')
+    await client.query('ROLLBACK').catch((rbErr) =>
+      console.error(JSON.stringify({ code: 'E_ROLLBACK', message: String(rbErr) })),
+    ) // 别用回滚自身的错顶掉真因
     throw err
   } finally {
     client.release()

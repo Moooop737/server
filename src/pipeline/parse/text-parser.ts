@@ -9,8 +9,8 @@ export class TextParser implements Parser {
   readonly name = 'text'
 
   run(ctx: IngestContext): void {
-    const raw = ctx.input.content ?? ''
-    const title = ctx.input.title?.trim() || deriveTitle(raw)
+    const raw = ctx.data.content ?? ''
+    const title = ctx.data.title?.trim() || deriveTitle(raw)
     ctx.parsed = { title, text: raw }
   }
 }

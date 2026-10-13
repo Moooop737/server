@@ -19,7 +19,7 @@ export class HtmlParser implements Parser {
         const raw = ctx.fetched?.raw ?? ''
         if (raw.trim() === '') { ctx.parsed = { title: '未命名资源', text: '' }; return }
 
-        const dom = new JSDOM(raw, { url: ctx.input.url })
+        const dom = new JSDOM(raw, { url: ctx.data.url })
         const doc = dom.window.document
         stripPageAnchors(doc)
         const doc_title = doc.querySelector('title')?.textContent?.trim() ?? ''

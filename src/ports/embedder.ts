@@ -1,4 +1,4 @@
 export interface Embedder {
-  embed(texts: string[], options?: { dimensions?: number }): Promise<number[][]>
+  embed(Texts: string[], Options?: { dimensions?: number; signal?: AbortSignal }): Promise<number[][]>
   readonly dimensions: number
 }

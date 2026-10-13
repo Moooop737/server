@@ -1,7 +1,7 @@
 /**
- * 入库配方工厂 —— 按来源种类造出「内容策略链」fetch → parse → chunk，交单执行器按此顺序跑。
- * 配方只装策略：embed 与写库经 IngestDeps 注入的端口完成，不进配方（10-10 决定：stage 文件夹只放无外部 I/O 的策略）。
- * 文本入库也过 fetch 段（PassthroughFetcher），执行器内因此不出现来源类型分支；加新来源 = 在此加一个 createXxxRecipe。
+ * stage 注册表 —— 名字→构造函数 的目录，工厂据此把 Recipe 里的策略名兑换成实例。
+ * 纯目录：无来源分支；查无（含 Object.prototype 上的名字，如 'toString'/'constructor'）一律返回 undefined，校验交工厂抛 E_UNKNOWN_STAGE。
+ * embedder 也在表内：名字位是校验位不是选择位（全库只允许一个 embedding 模型），P1 只有 qwenembed 一项，构造时需要 config 的 baseUrl/model/dimensions；其余策略 P1 不消费 config。
  */
 
 import { HttpFetcher } from './fetch/http-fetcher'
@@ -9,22 +9,36 @@ import { PassthroughFetcher } from './fetch/passthrough'
 import { HtmlParser } from './parse/html-parser'
 import { TextParser } from './parse/text-parser'
 import { LegacyChunker } from './chunk/legacy'
+import { QwenEmbedder } from './embed/qwenembed'
 
-export { createUrlRecipe, createTextRecipe }
-export type { IngestRecipe }
+export { createStageRegistry }
 
-import type { Chunker, Fetcher, Parser } from './contracts'
+import type { StageRegistry, PipelineConfig, Fetcher, Parser, Chunker } from './contracts'
+import type { Embedder } from '../ports/embedder'
 
-interface IngestRecipe {
-  fetch: Fetcher
-  parse: Parser
-  chunk: Chunker
+function createStageRegistry(): StageRegistry {
+  const fetchers: Record<string, (c: PipelineConfig) => Fetcher> = {
+    http: () => new HttpFetcher(),
+    passthrough: () => new PassthroughFetcher(),
+  }
+  const parsers: Record<string, (c: PipelineConfig) => Parser> = {
+    html: () => new HtmlParser(),
+    text: () => new TextParser(),
+  }
+  const chunkers: Record<string, (c: PipelineConfig) => Chunker> = {
+    legacy: () => new LegacyChunker(),
+  }
+  const embedders: Record<string, (c: PipelineConfig) => Embedder> = {
+    qwenembed: (c) => new QwenEmbedder(c),
+  }
+  return {
+    fetcher: (Name, Config) => instantiate(fetchers, Name, Config),
+    parser: (Name, Config) => instantiate(parsers, Name, Config),
+    chunker: (Name, Config) => instantiate(chunkers, Name, Config),
+    embedder: (Name, Config) => instantiate(embedders, Name, Config),
+  }
 }
 
-function createUrlRecipe(): IngestRecipe {
-  return { fetch: new HttpFetcher(), parse: new HtmlParser(), chunk: new LegacyChunker() }
-}
-
-function createTextRecipe(): IngestRecipe {
-  return { fetch: new PassthroughFetcher(), parse: new TextParser(), chunk: new LegacyChunker() }
+function instantiate<T>(Table: Record<string, (c: PipelineConfig) => T>, Name: string, Config: PipelineConfig): T | undefined {
+  return Object.hasOwn(Table, Name) ? Table[Name]!(Config) : undefined
 }

@@ -9,28 +9,23 @@ export interface Repository {
   getResource(id: string): Promise<Resource | null>
   listResources(): Promise<Resource[]>
   updateResourceStatus(id: string, status: Resource['status'], reason?: string): Promise<void>
-  softDeleteResource(id: string): Promise<void>
+  updateResourceTitle(Id: string, Title: string): Promise<void>
+  findActiveBySource(Url: string): Promise<Resource | null> // status ∈ ready/processing 且未软删
+  softDeleteResource(id: string): Promise<boolean>
   findResourcesByStatus(status: Resource['status']): Promise<Resource[]>
 
-  // ── Chunk ──
-  createChunks(
-    resourceId: string,
-    chunks: Pick<Chunk, 'chunk_index' | 'content' | 'start_offset' | 'end_offset'>[]
-  ): Promise<Chunk[]>
+  // ── Chunk + Embedding（同事务写，并把行一起转 ready）──
+  writeChunksWithEmbeddings(
+    ResourceId: string,
+    Chunks: Pick<Chunk, 'chunk_index' | 'content' | 'start_offset' | 'end_offset'>[],
+    Vectors: Pick<Embedding, 'dimension' | 'model' | 'embedding'>[], // 与 Chunks 同序等长（调用方 pipelines 已判长度）
+  ): Promise<number> // 返回写入 chunk 数；ready 与数据同事务，不存在「向量已落、行还 processing」
   getChunksByResource(resourceId: string): Promise<Chunk[]>
-  deleteChunksByResource(resourceId: string): Promise<void>
+  deleteChunksByResource(resourceId: string): Promise<void> // embeddings 经 FK source_id→chunks.id ON DELETE CASCADE 随之消失
 
-  // ── Embedding ──
-  createEmbeddings(
-    embeddings: Pick<Embedding, 'source_id' | 'source_type' | 'dimension' | 'model' | 'embedding'>[]
-  ): Promise<void>
-  deleteEmbeddingsByResource(resourceId: string): Promise<void>
-
-  // ── Session / Message ──
+  // ── Session / Message ──（原样不动）
   createSession(title?: string): Promise<Session>
   getSession(id: string): Promise<Session | null>
-  createMessage(
-    data: Pick<Message, 'session_id' | 'role' | 'content' | 'sources'>
-  ): Promise<Message>
+  createMessage(data: Pick<Message, 'session_id' | 'role' | 'content' | 'sources'>): Promise<Message>
   getMessagesBySession(sessionId: string): Promise<Message[]>
 }

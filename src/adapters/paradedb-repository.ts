@@ -87,58 +87,91 @@ export class ParadeDbRepository implements Repository {
         )
     }
 
-    // ── Chunk ──
-
-    async createChunks(
-        resourceId: string,
-        chunks: Pick<Chunk, 'chunk_index' | 'content' | 'start_offset' | 'end_offset'>[],
-    ): Promise<Chunk[]> {
-        if (chunks.length === 0) return []
-        // 先拿 resource_uri（chunks 表 NOT NULL；端口签名不传此值）
-        const { rows: [res] } = await this.pool.query(
-            `SELECT data_uri FROM resources WHERE id = $1`,
-            [resourceId],
+    async updateResourceTitle(Id: string, Title: string): Promise<void> {
+        await this.pool.query(
+            `UPDATE resources SET title = $2, updated_at = now() WHERE id = $1`,
+            [Id, Title],
         )
-        const resourceUri = res.data_uri as string
-
-        // 批量 INSERT：动态拼 VALUES 段
-        const values: string[] = []
-        const params: any[] = []
-        let i = 1
-        for (const c of chunks) {
-            values.push(`($${i}, $${i + 1}, $${i + 2}, $${i + 3}, $${i + 4}, $${i + 5})`)
-            params.push(resourceId, resourceUri, c.chunk_index, c.content, c.start_offset, c.end_offset)
-            i += 6
-        }
-        const { rows } = await this.pool.query(
-            `INSERT INTO chunks (resource_id, resource_uri, chunk_index, content, start_offset, end_offset)
-       VALUES ${values.join(',')}
-       RETURNING *`,
-            params,
-        )
-        return rows.map(rowToChunk)
     }
 
-    // ── Embedding ──
-
-    async createEmbeddings(
-        embeddings: Pick<Embedding, 'source_id' | 'source_type' | 'dimension' | 'model' | 'embedding'>[],
-    ): Promise<void> {
-        if (embeddings.length === 0) return
-        const values: string[] = []
-        const params: any[] = []
-        let i = 1
-        for (const e of embeddings) {
-            values.push(`($${i}, $${i + 1}, $${i + 2}, $${i + 3}, $${i + 4}::halfvec)`)
-            params.push(e.source_id, e.source_type, e.dimension, e.model, vecToHalfvecStr(e.embedding))
-            i += 5
-        }
-        await this.pool.query(
-            `INSERT INTO embeddings (source_id, source_type, dimension, model, embedding)
-       VALUES ${values.join(',')}
-       ON CONFLICT DO NOTHING`,
-            params,
+    async findActiveBySource(Url: string): Promise<Resource | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM resources
+       WHERE source = $1 AND status IN ('ready', 'processing') AND deleted_at IS NULL
+       LIMIT 1`,
+            [Url],
         )
+        return rows[0] ? rowToResource(rows[0]) : null
+    }
+
+    // ── Chunk + Embedding + ready（同一事务）──
+
+    // chunk、向量、状态迁移同事务：要么全写、要么全滚，既杜绝「有 chunk 无向量」，也杜绝「向量已落、行还 processing」
+    async writeChunksWithEmbeddings(
+        ResourceId: string,
+        Chunks: Pick<Chunk, 'chunk_index' | 'content' | 'start_offset' | 'end_offset'>[],
+        Vectors: Pick<Embedding, 'dimension' | 'model' | 'embedding'>[],
+    ): Promise<number> {
+        if (Chunks.length === 0) return 0
+        const client = await this.pool.connect()
+        try {
+            await client.query('BEGIN')
+
+            const { rows: [res] } = await client.query(
+                `SELECT data_uri FROM resources WHERE id = $1`,
+                [ResourceId],
+            )
+            const resourceUri = res.data_uri as string
+
+            const cValues: string[] = []
+            const cParams: any[] = []
+            let i = 1
+            for (const c of Chunks) {
+                cValues.push(`($${i}, $${i + 1}, $${i + 2}, $${i + 3}, $${i + 4}, $${i + 5})`)
+                cParams.push(ResourceId, resourceUri, c.chunk_index, c.content, c.start_offset, c.end_offset)
+                i += 6
+            }
+            const { rows: chunkRows } = await client.query(
+                `INSERT INTO chunks (resource_id, resource_uri, chunk_index, content, start_offset, end_offset)
+         VALUES ${cValues.join(',')}
+         RETURNING id, chunk_index`,
+                cParams,
+            )
+            const idByIndex = new Map<number, string>(
+                chunkRows.map((r) => [r.chunk_index as number, r.id as string]),
+            )
+
+            const eValues: string[] = []
+            const eParams: any[] = []
+            let j = 1
+            for (let k = 0; k < Chunks.length; k++) {
+                const sourceId = idByIndex.get(Chunks[k]!.chunk_index)!
+                const v = Vectors[k]!
+                eValues.push(`($${j}, $${j + 1}, $${j + 2}, $${j + 3}, $${j + 4}::halfvec)`)
+                eParams.push(sourceId, 'chunk', v.dimension, v.model, vecToHalfvecStr(v.embedding))
+                j += 5
+            }
+            await client.query(
+                `INSERT INTO embeddings (source_id, source_type, dimension, model, embedding)
+         VALUES ${eValues.join(',')}`,
+                eParams,
+            )
+
+            await client.query(
+                `UPDATE resources SET status = 'ready', error_reason = NULL, updated_at = now() WHERE id = $1`,
+                [ResourceId],
+            )
+
+            await client.query('COMMIT')
+            return Chunks.length
+        } catch (err) {
+            await client.query('ROLLBACK').catch((rbErr) =>
+                console.error(JSON.stringify({ code: 'E_ROLLBACK', message: String(rbErr) })),
+            ) // 别用回滚自身的错顶掉真因
+            throw err
+        } finally {
+            client.release()
+        }
     }
 
     async listResources(): Promise<Resource[]> {
@@ -161,16 +194,40 @@ export class ParadeDbRepository implements Repository {
         return rows.map(rowToChunk)
     }
 
+    // 软删：resources 行留痕（deleted_at），检索数据物理移除（chunks → embeddings 经 FK CASCADE 一起走）
+    // 返回 false = 该行不存在或早已软删，交调用方决定怎么报
+    async softDeleteResource(Id: string): Promise<boolean> {
+        const client = await this.pool.connect()
+        try {
+            await client.query('BEGIN')
+            const { rowCount } = await client.query(
+                `UPDATE resources SET deleted_at = now(), updated_at = now()
+                 WHERE id = $1 AND deleted_at IS NULL`,
+                [Id],
+            )
+            if (rowCount === 0) {
+                await client.query('ROLLBACK').catch((rbErr) =>
+                    console.error(JSON.stringify({ code: 'E_ROLLBACK', message: String(rbErr) })),
+                )
+                return false
+            }
+            await client.query(`DELETE FROM chunks WHERE resource_id = $1`, [Id])
+            await client.query('COMMIT')
+            return true
+        } catch (err) {
+            await client.query('ROLLBACK').catch((rbErr) =>
+                console.error(JSON.stringify({ code: 'E_ROLLBACK', message: String(rbErr) })),
+            )
+            throw err
+        } finally {
+            client.release()
+        }
+    }
+
     // ── 后续 Story 的方法先占位 ──
 
-    async softDeleteResource(_id: string): Promise<void> {
-        throw new Error('NotImplemented: softDeleteResource (Story 1.4)')
-    }
     async findResourcesByStatus(_status: Resource['status']): Promise<Resource[]> {
         throw new Error('NotImplemented: findResourcesByStatus (Story 1.4/cleanup)')
-    }
-    async deleteEmbeddingsByResource(_resourceId: string): Promise<void> {
-        throw new Error('NotImplemented: deleteEmbeddingsByResource (Story 1.4)')
     }
     async createSession(_title?: string): Promise<Session> {
         throw new Error('NotImplemented: createSession (Story 2.1)')

@@ -1,6 +1,7 @@
 import type { Pool } from 'pg'
 import type { Repository } from '../ports/repository'
 import type { Resource, Chunk, Embedding, Session, Message } from '../types/types'
+export { rowToChunk }
 
 // ─── 工具函数：把 pg 的行 → 我们的 types（契约层） ───
 

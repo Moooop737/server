@@ -8,10 +8,14 @@ import { bootstrap, startServer } from './bootstrap'
 import { createHealthProbes } from './routes/health/probes'
 import { createHealthRoute } from './routes/health/health'
 import { createResourcesRoute } from './routes/resources/resources'
+import { createRetrieveRoute } from './routes/retrieve/retrieve'
+import { createChatRoute } from './routes/chat/chat'
 
 const { app, deps } = bootstrap()
 
 app.route('/', createHealthRoute(createHealthProbes(deps.config, deps.pool)))
-app.route('/resources', createResourcesRoute({ repo: deps.repo, factory: deps.factory, inflight: deps.inflight, pipelineConfig: deps.pipelineConfig }))
+app.route('/resources', createResourcesRoute({ repo: deps.repo, factory: deps.pipelineFactory, pipelineConfig: deps.pipelineConfig, inflight: deps.inflight }))
+app.route('/retrieve', createRetrieveRoute({ pool: deps.pool, config: deps.retrieverConfig, factory: deps.retrieverFactory, getVectorDimensions: () => deps.vectorDimensions }))
+app.route('/chat', createChatRoute({ repo: deps.repo, pool: deps.pool, config: deps.retrieverConfig, retrieverFactory: deps.retrieverFactory, getVectorDimensions: () => deps.vectorDimensions }))
 
 void startServer(app, deps)

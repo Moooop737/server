@@ -186,6 +186,15 @@ export class ParadeDbRepository implements Repository {
         return rows.map(rowToResource)
     }
 
+    async countResourcesByStatus(): Promise<Record<Resource['status'], number>> {
+        const { rows } = await this.pool.query(
+            `SELECT status, count(*)::int AS n FROM resources WHERE deleted_at IS NULL GROUP BY status`,
+        )
+        const counts: Record<Resource['status'], number> = { processing: 0, ready: 0, failed: 0 }
+        for (const row of rows) counts[row.status as Resource['status']] = Number(row.n)
+        return counts
+    }
+
     // 删 chunk；embedding 经 FK source_id→chunks.id ON DELETE CASCADE 随之删除，无孤儿向量
     async deleteChunksByResource(resourceId: string): Promise<void> {
         await this.pool.query(`DELETE FROM chunks WHERE resource_id = $1`, [resourceId])

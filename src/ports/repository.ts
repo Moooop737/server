@@ -13,6 +13,8 @@ export interface Repository {
   findActiveBySource(Url: string): Promise<Resource | null> // status ∈ ready/processing 且未软删
   softDeleteResource(id: string): Promise<boolean>
   findResourcesByStatus(status: Resource['status']): Promise<Resource[]>
+  // 只数未软删的行；三个状态都给键（没命中补 0）。端口只报事实，「空库 / 全无 ready」的判定归调用方。
+  countResourcesByStatus(): Promise<Record<Resource['status'], number>>
 
   // ── Chunk + Embedding（同事务写，并把行一起转 ready）──
   writeChunksWithEmbeddings(

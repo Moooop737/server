@@ -9,7 +9,7 @@
  */
 
 export { ollamaHealthCheck, ollamaModelList, ollamaStatusList }
-export type { ModelDetails, Model, ModelStatus }
+export type { OllamaModelDetails, OllamaModelEntry, OllamaModelStatus }
 
 async function ollamaHealthCheck(BaseUrl: string): Promise<boolean> {
   try {
@@ -22,7 +22,7 @@ async function ollamaHealthCheck(BaseUrl: string): Promise<boolean> {
   }
 }
 
-interface ModelDetails {
+interface OllamaModelDetails {
   parent_model: string
   format: string
   family: string
@@ -31,39 +31,39 @@ interface ModelDetails {
   quantization_level: string
 }
 
-interface Model {
+interface OllamaModelEntry {
   name: string
   model: string
   modified_at: string
   size: number // bytes
   digest: string
-  details: ModelDetails
+  details: OllamaModelDetails
 }
 
-async function ollamaModelList(BaseUrl: string): Promise<Model[]> {
+async function ollamaModelList(BaseUrl: string): Promise<OllamaModelEntry[]> {
   const res = await fetch(`${BaseUrl}/api/tags`, {
     signal: AbortSignal.timeout(10_000),
   })
   if (!res.ok) throw new Error(`ollamaModelList HTTP ${res.status}: ${await res.text()}`)
-  const json = (await res.json()) as { models?: Model[] }
+  const json = (await res.json()) as { models?: OllamaModelEntry[] }
   return json.models ?? []
 }
 
-interface ModelStatus {
+interface OllamaModelStatus {
   name: string
   model: string
   size: number // bytes
   digest: string
-  details: ModelDetails
+  details: OllamaModelDetails
   expires_at: string
   size_vram: number // bytes
 }
 
-async function ollamaStatusList(BaseUrl: string): Promise<ModelStatus[]> {
+async function ollamaStatusList(BaseUrl: string): Promise<OllamaModelStatus[]> {
   const res = await fetch(`${BaseUrl}/api/ps`, {
     signal: AbortSignal.timeout(10_000),
   })
   if (!res.ok) throw new Error(`ollamaStatusList HTTP ${res.status}: ${await res.text()}`)
-  const json = (await res.json()) as { models?: ModelStatus[] }
+  const json = (await res.json()) as { models?: OllamaModelStatus[] }
   return json.models ?? []
 }

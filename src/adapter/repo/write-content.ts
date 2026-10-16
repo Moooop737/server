@@ -3,12 +3,24 @@
  * 事务是这块的唯一边界：要么全写、要么全滚，既杜绝「有 chunk 无向量」，也杜绝「向量已落、行还 processing」。
  * number[] ↔ halfvec 字面量字符串的转换住本层（vecToHalfvecStr），不外漏（脊「数据与格式」条）。
  * 两条多行 INSERT 各算各的参数预算（chunk 6 参 / embedding 5 参），分批留位不实现 —— 见脊的 Deferred。
+ * Embedding 的实体形状住本层：它只有写侧（读侧从不投影它），number[] 是端口契约、halfvec 字符串是 SQL 细节。
  */
 
 export { writeChunksWithEmbeddings, deleteChunksByResource }
 
+export type { Embedding }
+
 import type { Pool } from 'pg'
-import type { Chunk, Embedding } from '../../types/types'
+import type { Chunk, timestamp } from './read-content'
+
+interface Embedding extends timestamp {
+  id: string
+  source_id: string
+  source_type: 'chunk'
+  dimension: number
+  model: string
+  embedding: number[]
+}
 
 async function writeChunksWithEmbeddings(
   Db: Pool,

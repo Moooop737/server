@@ -1,5 +1,5 @@
 /**
- * 入库管线工厂 —— PipelineFactory.assemble(Recipe) 把策略名兑换成实例、捆 repo，产出一个数据无关的可执行对象 Pipeline。
+ * 入库工厂 —— IngestFactory.assemble(Recipe) 把策略名兑换成实例、捆 repo，产出一个数据无关的可执行对象 Ingest。
  * run(KBData, CallerSignal) 跑单条；batch(KBData[], CallerSignal) 用同一台机器跑多条，每条独立（一条失败或抛出都不阻断其余，abort 后未开始的不再建行、也不出结果）。
  * 生命周期：查重 → 建 processing 行(title 占位) → 登记 in-flight controller → fetch → parse → 回填真标题 → chunk → embed → 同事务写 chunk+向量并把行转 ready → finally 注销登记。
  * 建行之后的失败都留在那条行上(failed) 并带原因；建行之前的拒绝(查重命中/进来就已取消)返回 resource:null。
@@ -8,16 +8,16 @@
  * 取消延迟有下限：parse 与 chunk 是同步的，pg 写入也不吃 signal ⇒ 只能在异步边界上观测到取消，最坏要等当前那一段同步/写事务跑完（撤回多写的那一笔由写入后的复查负责）。
  * 结果码：E_DUPLICATE 查重 / E_CANCELLED 取消 / E_TIMEOUT stage 超时 / E_RESOURCE_GONE 写入期间资源被删 / E_INGEST_FAILED 其余。
  * 硬约束：Signal 只喂 fetch/embed 这类长操作；fail() 落库改状态绝不复用 Signal（aborted signal 会连"失败留痕"一起杀掉）。
- * 依赖：contracts(类型) / adapter 的门(Repo,EmbeddingTarget) / embed/embed-chunks(embedMany 封装) / inflight(取消登记处) / recipes(注册表经构造注入)。
+ * 依赖：contracts(类型) / adapter 的门(Repo,EmbeddingTarget,embedChunks,Resource) / inflight(取消登记处) / recipes(注册表经构造注入)。
  */
 
-import { embedChunks } from './embed/embed-chunks'
+import { embedChunks } from '../adapter/contract'
 
-export { PipelineFactory, IngestError }
+export { IngestFactory, IngestError }
 
-import type { Recipe, KBData, Pipeline, IngestResult, IngestContext, StageRegistry } from './contracts'
+import type { Recipe, KBData, Ingest, IngestResult, IngestContext, StageRegistry } from './contracts'
 import type { InflightRegistry } from './inflight'
-import type { Resource } from '../types/types'
+import type { Resource } from '../adapter/contract'
 
 class IngestError extends Error {
   readonly code: string
@@ -28,7 +28,7 @@ class IngestError extends Error {
   }
 }
 
-class PipelineFactory {
+class IngestFactory {
   private readonly reg: StageRegistry
   private readonly inflight: InflightRegistry
 
@@ -37,7 +37,7 @@ class PipelineFactory {
     this.inflight = Inflight
   }
 
-  assemble(Recipe: Recipe): Pipeline {
+  assemble(Recipe: Recipe): Ingest {
     const fetcher = need(this.reg.fetcher(Recipe.fetcher), 'fetcher', Recipe.fetcher)
     const parser = need(this.reg.parser(Recipe.parser), 'parser', Recipe.parser)
     const chunker = need(this.reg.chunker(Recipe.chunker), 'chunker', Recipe.chunker)

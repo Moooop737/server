@@ -8,7 +8,7 @@
 export { createResource, updateResourceStatus, updateResourceTitle, softDeleteResource, markInterruptedAsFailed }
 
 import type { Pool, PoolClient } from 'pg'
-import type { Resource } from '../../types/types'
+import type { Resource } from './read-content'
 import { rowToResource } from './read-content'
 
 async function createResource(

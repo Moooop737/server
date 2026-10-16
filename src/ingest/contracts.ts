@@ -1,5 +1,4 @@
-import type { EmbeddingTarget, Repo } from '../adapter/contract'
-import type { Resource } from '../types/types'
+import type { EmbeddingTarget, Repo, Resource } from '../adapter/contract'
 
 // ── 工厂输入：装配规格（无数据）──
 export interface Recipe {
@@ -19,7 +18,7 @@ export interface KBData {
 }
 
 // ── 工厂输出：可执行对象 ──
-export interface Pipeline {
+export interface Ingest {
   run(Data: KBData, Signal?: AbortSignal): Promise<IngestResult>
   batch(Data: KBData[], Signal?: AbortSignal): Promise<IngestResult[]>
 }

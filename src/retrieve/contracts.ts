@@ -1,9 +1,9 @@
 /**
- * 检索编排层类型。与 pipeline/contracts.ts 同构：Recipe 是装配规格（策略名 + 活依赖 + 旋钮，不含业务数据），可执行对象只在 search 时才吃问句。
- * 与 pipeline 的两处形状差异：
+ * 检索编排层类型。与 ingest/contracts.ts 同构：Recipe 是装配规格（策略名 + 活依赖 + 旋钮，不含业务数据），可执行对象只在 search 时才吃问句。
+ * 与 ingest 的两处形状差异：
  * · 注册表构造函数统一吃 RetrieverDeps（repo + embedding + config + vectorDimensions），因为 vector/lexical 两路真要读库；
- *   pipeline 的 stage 不碰库，repo 由 assemble 自己捆，所以那边只需要策略名。
- * · Retriever / RetrievalResult / RetrievedChunk 这三个「可执行契约」也住这里 —— 对齐 pipeline 的 Pipeline/IngestResult。
+ *   ingest 的 stage 不碰库，repo 由 assemble 自己捆，所以那边只需要策略名。
+ * · Retriever / RetrievalResult / RetrievedChunk 这三个「可执行契约」也住这里 —— 对齐 ingest 的 Ingest/IngestResult。
  *   RetrievedChunk 直接 extends 门里的 ChunkCandidate 再加 score，字段清单不在本层重抄一遍（改一侧必然要同步另一侧的那种）。
  *   协作者（Repo 与 EmbeddingTarget）一律来自 adapter/contract.ts 那道门，本层不再自己声明端口；embed 不在注册表里，它是装配选定的一行句柄。
  */

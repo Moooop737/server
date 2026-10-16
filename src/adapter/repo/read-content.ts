@@ -3,6 +3,7 @@
  * 行投影是本层私有的：pg 读回的 timestamptz 是 Date 实例、halfvec 是字符串，两者都不许越过本层（脊「数据与格式」条）。
  * 每个读方法自带未软删谓词，不由调用方拼（AD-3）；例外是 dimensionsInStore()，它数的是 embeddings 的维度事实，与某行是否软删无关。
  * 末尾五个 NotImplemented 是随 Repository 端口一起搬进来的占位：findResourcesByStatus 属清理侧，session/message 四条随 Story 2.2 落库时迁出本层。
+ * 实体形状住本层（timestamp / Resource / Chunk / Session / Message / CitationSource）：谁产出行投影谁定义；Embedding 只有写侧，就近住 write-content.ts。
  */
 
 export {
@@ -11,8 +12,58 @@ export {
   findResourcesByStatus, createSession, getSession, createMessage, getMessagesBySession,
 }
 
+export type { timestamp, Resource, Chunk, Session, Message, CitationSource }
+
 import type { Pool } from 'pg'
-import type { Resource, Chunk, Session, Message } from '../../types/types'
+
+interface timestamp {
+  created_at: string
+  updated_at: string
+  deleted_at: string | null
+}
+
+interface Resource extends timestamp {
+  id: string
+  title: string
+  source: string | null
+  data_uri: string
+  content_type: 'url' | 'markdown' | 'plaintext'
+  status: 'processing' | 'ready' | 'failed'
+  error_reason: string | null
+}
+
+interface Chunk extends timestamp {
+  id: string
+  resource_id: string
+  resource_uri: string
+  chunk_index: number
+  content: string
+  start_offset: number | null
+  end_offset: number | null
+}
+
+interface Session extends timestamp {
+  id: string
+  title: string
+  user_id: string
+}
+
+interface Message extends timestamp {
+  id: string
+  session_id: string
+  role: 'user' | 'assistant' | 'tool'
+  content: string
+  sources: CitationSource[] | null
+}
+
+interface CitationSource {
+  marker: string
+  chunk_id: string
+  doc_title: string
+  data_uri: string
+  source: string | null
+  snippet: string
+}
 
 function rowToResource(r: any): Resource {
   return {

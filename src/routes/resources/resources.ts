@@ -13,16 +13,16 @@
  */
 
 import { Hono } from 'hono'
-import { IngestError } from '../../pipeline/pipelines'
+import { IngestError } from '../../ingest/ingest'
 
 export { createResourcesRoute }
 
 import type { Deps } from '../../bootstrap'
-import type { Recipe, KBData } from '../../pipeline/contracts'
+import type { Recipe, KBData } from '../../ingest/contracts'
 
 function createResourcesRoute(AppDeps: Deps): Hono {
   const app = new Hono()
-  const { repo, pipelineFactory: factory, inflight, embedding } = AppDeps
+  const { repo, ingestFactory: factory, inflight, embedding } = AppDeps
 
   app.delete('/:id', async (c) => {
     const id = c.req.param('id')

@@ -12,7 +12,7 @@
  * SDK 那两格交的是两个工厂：providerRegistry() 按 env 里在位的 Key 造服务商（缺 Key 不进表、不报错），modelRegistry(Providers) 把在册服务商兑换成句柄。
  * 两者都只在装配期各调一次，句柄身份因此进程级唯一；providers 这层中间产物不出门，外面只见 models。
  * 方法级前置条件（调用方只读这一份，不必开 repo/ 各文件）：
- * · writeChunksWithEmbeddings：Vectors 与 Chunks 同序等长（由调用方 pipeline 判长度）；chunk、向量、转 ready 同一事务，
+ * · writeChunksWithEmbeddings：Vectors 与 Chunks 同序等长（由调用方 ingest 判长度）；chunk、向量、转 ready 同一事务，
  *   不存在「向量已落、行还 processing」；返回写入 chunk 数；期间资源被软删则整笔回滚并抛 code='E_RESOURCE_GONE'。
  * · findActiveBySource：只认 status ∈ ready/processing 且未软删。
  * · countResourcesByStatus：只数未软删，三个状态都给键（没命中补 0）；「空库 / 全无 ready」的判定归调用方。
@@ -21,11 +21,12 @@
  * · dimensionsInStore：数的是 embeddings 的维度事实，与行是否软删无关；库不可达时抛，由 bootstrap 把 vectorDimensions 留在 null。
  * · updateResourceStatus / 写入路径都自带 `deleted_at IS NULL` 谓词，不由调用方拼。
  * 唯一例外：`connection/pool.ts` 的 createDbPool 被三个 gitignore 的对账脚本直接 import（它们要一条独立连接做 raw 校数），不经本门。
- * 本层的三格分工：`connection/`＝怎么连上外部服务（pg 池、Ollama 的原生地址与探活），`repo/`＝行与 SQL 文本，`provider/`＋`model/`＝AI SDK 的网关与句柄。
+ * 本层的四格分工：`connection/`＝怎么连上外部服务（pg 池、Ollama 的原生地址与探活），`repo/`＝行、SQL 文本与实体形状（Resource/Chunk/Session/Message 住在产出行投影的那个文件里），`provider/`＋`model/`＝AI SDK 的网关、句柄与 embed 调用封装。
+ * 实体形状不再有跨层共享盒（原 `types/` 已删）：别盒要用哪一位，由本门逐个点名交出（现交 Resource）。
  */
 
-export { createRepo, ollamaHealthCheck, ollamaModelList, ollamaStatusList, providerRegistry, modelRegistry }
-export type { Repo, ChunkCandidate, EmbeddingTarget, OllamaModelDetails, OllamaModelEntry, OllamaModelStatus, ProviderEntryName, LanguageModelId, EmbeddingModelId, RegistedProviders, RegistedModels }
+export { createRepo, ollamaHealthCheck, ollamaModelList, ollamaStatusList, providerRegistry, modelRegistry, embedChunks }
+export type { Repo, ChunkCandidate, EmbeddingTarget, Resource, OllamaModelDetails, OllamaModelEntry, OllamaModelStatus, ProviderEntryName, LanguageModelId, EmbeddingModelId, RegistedProviders, RegistedModels }
 
 import { createDbPool, pingDb } from './connection/pool'
 import {
@@ -41,9 +42,11 @@ import { lexicalCandidates } from './repo/search-lexical'
 import { ollamaHealthCheck, ollamaModelList, ollamaStatusList } from './connection/ollama'
 import { providerRegistry, type ProviderEntryName } from './provider/registry'
 import { modelRegistry, type EmbeddingModelId, type LanguageModelId} from './model/registry'
+import { embedChunks } from './model/embed-chunks'
 
 import type { AppConfig } from '../config'
-import type { Chunk, Embedding, Message, Resource, Session } from '../types/types'
+import type { Chunk, Message, Resource, Session } from './repo/read-content'
+import type { Embedding } from './repo/write-content'
 import type { OllamaModelDetails, OllamaModelEntry, OllamaModelStatus } from './connection/ollama'
 import type { EmbeddingModelV4, LanguageModelV4, ProviderV4 } from '@ai-sdk/provider';
 

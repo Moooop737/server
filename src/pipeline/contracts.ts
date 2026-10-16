@@ -1,5 +1,4 @@
-import type { Embedder } from '../ports/embedder'
-import type { Repository } from '../ports/repository'
+import type { EmbeddingTarget, Repo } from '../adapter/contract'
 import type { Resource } from '../types/types'
 
 // ── 工厂输入：装配规格（无数据）──
@@ -7,16 +6,8 @@ export interface Recipe {
   fetcher: string   // 'http' | 'passthrough'
   parser: string    // 'html' | 'text'
   chunker: string   // 'legacy'
-  embedder: string  // 'qwenembed'
-  repo: Repository
-  config: PipelineConfig
-}
-
-// 微调各策略的旋钮，不含业务数据；bootstrap 从 AppConfig 派生。只列真有消费者读取的字段
-export interface PipelineConfig {
-  ollamaBaseUrl: string
-  embeddingModel: string  // 写进 embeddings.model 的模型标识，不是注册表里的策略名
-  embeddingDimensions: number
+  embedding: EmbeddingTarget  // 装配层从 model 清单选定的那一行，入库与检索共用同一个
+  repo: Repo
 }
 
 // ── run/batch 输入：业务数据 ──
@@ -41,11 +32,11 @@ export interface IngestResult {
 }
 
 // ── 名字→实例 的注册表（纯目录，查无返回 undefined，由工厂抛 E_UNKNOWN_STAGE）──
+// embed 不在表里：它是装配层选定的一行句柄，不是可换策略
 export interface StageRegistry {
-  fetcher(Name: string, Config: PipelineConfig): Fetcher | undefined
-  parser(Name: string, Config: PipelineConfig): Parser | undefined
-  chunker(Name: string, Config: PipelineConfig): Chunker | undefined
-  embedder(Name: string, Config: PipelineConfig): Embedder | undefined
+  fetcher(Name: string): Fetcher | undefined
+  parser(Name: string): Parser | undefined
+  chunker(Name: string): Chunker | undefined
 }
 
 // ── stage 之间传的数据 ──

@@ -8,8 +8,10 @@
  * 取消延迟有下限：parse 与 chunk 是同步的，pg 写入也不吃 signal ⇒ 只能在异步边界上观测到取消，最坏要等当前那一段同步/写事务跑完（撤回多写的那一笔由写入后的复查负责）。
  * 结果码：E_DUPLICATE 查重 / E_CANCELLED 取消 / E_TIMEOUT stage 超时 / E_RESOURCE_GONE 写入期间资源被删 / E_INGEST_FAILED 其余。
  * 硬约束：Signal 只喂 fetch/embed 这类长操作；fail() 落库改状态绝不复用 Signal（aborted signal 会连"失败留痕"一起杀掉）。
- * 依赖：contracts(类型) / ports(Repository,Embedder) / inflight(取消登记处) / recipes(注册表经构造注入)。
+ * 依赖：contracts(类型) / adapter 的门(Repo,EmbeddingTarget) / embed/embed-chunks(embedMany 封装) / inflight(取消登记处) / recipes(注册表经构造注入)。
  */
+
+import { embedChunks } from './embed/embed-chunks'
 
 export { PipelineFactory, IngestError }
 
@@ -36,13 +38,12 @@ class PipelineFactory {
   }
 
   assemble(Recipe: Recipe): Pipeline {
-    const fetcher = need(this.reg.fetcher(Recipe.fetcher, Recipe.config), 'fetcher', Recipe.fetcher)
-    const parser = need(this.reg.parser(Recipe.parser, Recipe.config), 'parser', Recipe.parser)
-    const chunker = need(this.reg.chunker(Recipe.chunker, Recipe.config), 'chunker', Recipe.chunker)
-    const embedder = need(this.reg.embedder(Recipe.embedder, Recipe.config), 'embedder', Recipe.embedder)
+    const fetcher = need(this.reg.fetcher(Recipe.fetcher), 'fetcher', Recipe.fetcher)
+    const parser = need(this.reg.parser(Recipe.parser), 'parser', Recipe.parser)
+    const chunker = need(this.reg.chunker(Recipe.chunker), 'chunker', Recipe.chunker)
     const repo = Recipe.repo
+    const embedding = Recipe.embedding
     const inflight = this.inflight
-    const model = Recipe.config.embeddingModel
 
     const runOne = async (Data: KBData, CallerSignal?: AbortSignal): Promise<IngestResult> => {
       if (CallerSignal?.aborted) return { resource: null, chunkCount: 0, failure: { code: 'E_CANCELLED', reason: '入库取消' } }
@@ -103,7 +104,7 @@ class PipelineFactory {
 
         let vectors: number[][]
         try {
-          vectors = await embedder.embed(plans.map((p) => p.content), { signal: Signal })
+          vectors = await embedChunks(plans.map((p) => p.content), embedding, Signal)
         } catch (err) {
           return await failFrom(err, 'embedding_error')
         }
@@ -114,7 +115,7 @@ class PipelineFactory {
           const chunkCount = await repo.writeChunksWithEmbeddings(
             resource.id,
             plans.map((p) => ({ chunk_index: p.chunk_index, content: p.content, start_offset: p.start_offset, end_offset: p.end_offset })),
-            vectors.map((v) => ({ dimension: v.length, model, embedding: v })),
+            vectors.map((v) => ({ dimension: v.length, model: embedding.modelId, embedding: v })),
           )
           // 写入不是可中断的：取消若落在 INSERT/UPDATE 期间，事务已提交成 ready，这里必须把那一笔撤回来
           if (Signal.aborted) return await cancelled()

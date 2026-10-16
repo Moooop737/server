@@ -1,18 +1,17 @@
 /**
- * 健康探针定义 —— createHealthProbes() 按已建好的连接池与配置组装探针清单，每项是 {name, ping}；
- * ping 只产出 ProbeResult{ok, detail?}，抛错交由 routes/health 的聚合器接住转 ok:false。本文件无 HTTP 语义。
+ * 健康探针定义 —— createHealthProbes() 按基础层交出的 repo 与配置组装探针清单，每项是 {name, ping}；
+ * ping 只产出 ProbeResult{ok, detail?}，抛错交由 routes/health 的聚合器接住转 ok:false。本文件无 HTTP 语义、也不碰连接池。
  * ollama 模型名带 tag（如 qwenembed:latest）而 EMBEDDING_MODEL 是裸名，故就绪判定须同时匹配裸名与 `${emb}:` 前缀。
- * 依赖：adapters/paradedb 的 pingDb、adapters/ollama 的三个只读 API、config 的 AppConfig。
+ * 依赖：adapter/contract 的 repo.ping() 与三个 Ollama 只读探针、config 的 AppConfig。
  */
 
-import { pingDb } from '../../adapters/paradedb'
-import { ollamaHealthCheck, ollamaModelList, ollamaStatusList } from '../../adapters/ollama'
+import { ollamaHealthCheck, ollamaModelList, ollamaStatusList } from '../../adapter/contract'
 
 export { createHealthProbes }
 export type { HealthCheck, ProbeResult }
 
 import type { AppConfig } from '../../config'
-import type { Pool } from 'pg'
+import type { Repo } from '../../adapter/contract'
 
 interface ProbeResult {
   ok: boolean
@@ -24,14 +23,14 @@ interface HealthCheck {
   ping: () => Promise<ProbeResult>
 }
 
-function createHealthProbes(Config: AppConfig, Db: Pool): HealthCheck[] {
+function createHealthProbes(Config: AppConfig, Repo: Repo): HealthCheck[] {
   const base = Config.ollamaBaseUrl
   const emb = Config.embeddingModel
 
   return [
     {
       name: 'db',
-      ping: async () => ({ ok: await pingDb(Db) }),
+      ping: async () => ({ ok: await Repo.ping() }),
     },
     {
       name: 'ollama',

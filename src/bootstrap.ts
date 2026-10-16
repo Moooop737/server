@@ -1,19 +1,22 @@
 /**
  * 启动装配 —— bootstrap() 读配置、组装 Deps（进程级入库管线工厂 + 检索工厂）、建空 app 并交出；startServer() 清理中断遗留、探一次向量维度、然后监听。
  * 缺必需 env → loadAppConfig() 打印错误并 process.exit(1)；cleanup 与维度体检失败都只记日志、不阻断启动。
+ * config.chatModel 填了却不在 model 清单里 → assertChatModel 点名在册句柄并 exit(1)（env 指错行是人写错，与「缺 Key 静默缺席」两回事）；没填则不选，等消费它的 build 再收口。
  * Deps.pipelineFactory / Deps.retrieverFactory 都是进程级单例工厂，路由各自在请求里 assemble(Recipe)；
  * Deps.inflight 是进程级取消登记处，工厂持有它、路由也用它（同一个实例，取消才按得到）。
- * pipelineConfig / retrieverConfig 由 AppConfig 派生，供路由装 Recipe（策略名 + 活依赖 + config）。
+ * Deps.repo 是基础层交出的服务，连接池对它来说是不可见的内部细节；本文件不再出现任何 SQL。
+ * Deps.models 是 SDK 句柄，装配期只兑换一次（providerRegistry → modelRegistry），路由共享同一批实例；startServer 头一行把它打成 I_MODELS，登记制的静默缺席靠这行现形。
+ * Deps.embedding 是装配层按 EMBEDDING_MODEL 从 model 清单里选定的那一行（句柄 + 标识 + 截维），入库与检索共用同一个；不在册 ⇒ E_EMBEDDING_MODEL 点名退出。
+ * retrieverConfig 由 AppConfig 派生，供路由装 Recipe（策略名 + 活依赖 + 旋钮）；入库侧不再有 pipelineConfig —— 三个 stage 都不吃旋钮。
  * Deps.vectorDimensions 是唯一的「启动后后填」字段，三态：buildDeps 先给 null，startServer 在 serve() 之前填成真值数组 ⇒ 路由不可能读到半填状态。
  * 体检失败就留在 null，检索会因此**拒绝作答**（E_DIMENSION_UNKNOWN）而不是退回 BM25-only 静默命中 —— 见 retrieve/retrievers.ts。
- * 依赖：config / paradedb / paradedb-repository / pipeline(recipes,inflight,pipelines) / retrieve(recipes,retrievers)。
+ * 依赖：config / adapter(contract) / pipeline(recipes,inflight,pipelines) / retrieve(recipes,retrievers)。
  */
 
 import { serve } from "@hono/node-server"
 import { Hono } from "hono"
 import { loadConfig, ConfigError } from "./config"
-import { createDbPool } from "./adapters/paradedb"
-import { ParadeDbRepository } from "./adapters/paradedb-repository"
+import { createRepo, modelRegistry, providerRegistry } from "./adapter/contract"
 import { createStageRegistry } from "./pipeline/recipes"
 import { InflightRegistry } from "./pipeline/inflight"
 import { PipelineFactory } from "./pipeline/pipelines"
@@ -22,18 +25,17 @@ export { bootstrap, startServer }
 export type { Deps }
 
 import type { AppConfig } from "./config"
-import type { Repository } from "./ports/repository"
-import type { PipelineConfig } from "./pipeline/contracts"
+import type { EmbeddingModelId, EmbeddingTarget, RegistedModels, Repo } from "./adapter/contract"
 import type { RetrieverConfig } from "./retrieve/contracts";
 import { RetrieverFactory } from "./retrieve/retrievers";
 import { createRetrieverStageRegistry } from "./retrieve/recipes";
 
 interface Deps {
   config: AppConfig
-  pool: ReturnType<typeof createDbPool>
-  repo: Repository
+  repo: Repo
+  models: RegistedModels
+  embedding: EmbeddingTarget
   inflight: InflightRegistry
-  pipelineConfig: PipelineConfig
   pipelineFactory: PipelineFactory
   retrieverConfig: RetrieverConfig
   retrieverFactory: RetrieverFactory
@@ -42,7 +44,19 @@ interface Deps {
 
 function bootstrap(): { app: Hono; deps: Deps } {
   const deps = buildDeps(loadAppConfig())
+  assertChatModel(deps)
   return { app: new Hono(), deps }
+}
+
+function assertChatModel(AppDeps: Deps): void {
+  const Name = AppDeps.config.chatModel
+  if (Name === undefined) return
+  if (Object.hasOwn(AppDeps.models.languageModels, Name)) return
+  console.error(JSON.stringify({
+    code: 'E_CHAT_MODEL',
+    message: `CHAT_MODEL=${Name} 不在册；在册对话句柄=${Object.keys(AppDeps.models.languageModels).join(',') || '无'}`,
+  }))
+  process.exit(1)
 }
 
 function loadAppConfig(): AppConfig {
@@ -57,13 +71,9 @@ function loadAppConfig(): AppConfig {
 }
 
 function buildDeps(Config: AppConfig): Deps {
-  const pool = createDbPool(Config.databaseUrl)
-  const repo = new ParadeDbRepository(pool)
-  const pipelineConfig: PipelineConfig = {
-    ollamaBaseUrl: Config.ollamaBaseUrl,
-    embeddingModel: Config.embeddingModel,
-    embeddingDimensions: Config.embeddingDimensions,
-  }
+  const repo = createRepo(Config)
+  const models = modelRegistry(providerRegistry())
+  const embedding = pickEmbeddingTarget(models, Config)
   const inflight = new InflightRegistry()
   const pipelineFactory = new PipelineFactory(createStageRegistry(), inflight)
   const retrieverConfig: RetrieverConfig = {
@@ -73,16 +83,14 @@ function buildDeps(Config: AppConfig): Deps {
     minSimilarity: Config.retrievalMinSimilarity,
     rrfK: Config.retrievalRrfK,
     defaultLimit: Config.retrievalDefaultLimit,
-    ollamaBaseUrl: Config.ollamaBaseUrl,
-    embeddingModel: Config.embeddingModel,
   }
   const retrieverFactory = new RetrieverFactory(createRetrieverStageRegistry())
   return {
     config: Config,
-    pool,
     repo,
+    models,
+    embedding,
     inflight,
-    pipelineConfig,
     pipelineFactory,
     retrieverConfig,
     retrieverFactory,
@@ -90,13 +98,31 @@ function buildDeps(Config: AppConfig): Deps {
   }
 }
 
-interface CleanupResult {
-  resources: number
+// env 的宽 string 在这里唯一一次收窄成清单的键；不在册就是配置自相矛盾，启动点名而不是留到请求里冒成 500
+function pickEmbeddingTarget(Models: RegistedModels, Config: AppConfig): EmbeddingTarget {
+  const Name = Config.embeddingModel
+  if (!Object.hasOwn(Models.embeddingModels, Name)) {
+    console.error(JSON.stringify({
+      code: 'E_EMBEDDING_MODEL',
+      message: `EMBEDDING_MODEL=${Name} 不在册；在册嵌入句柄=${Object.keys(Models.embeddingModels).join(',') || '无'}`,
+    }))
+    process.exit(1)
+  }
+  return {
+    model: Models.embeddingModels[Name as EmbeddingModelId]!,
+    modelId: Name,
+    dimensions: Config.embeddingDimensions,
+  }
 }
 
 async function startServer(App: Hono, AppDeps: Deps): Promise<void> {
+  console.log(JSON.stringify({
+    code: 'I_MODELS',
+    message: `对话句柄=${Object.keys(AppDeps.models.languageModels).join(',') || '无'} 嵌入句柄=${Object.keys(AppDeps.models.embeddingModels).join(',') || '无'}`,
+  }))
+
   try {
-    const cleaned = await cleanupInterruptedIngest(AppDeps.pool)
+    const cleaned = await AppDeps.repo.markInterruptedAsFailed()
     if (cleaned.resources > 0) {
       console.log(`启动清扫：${cleaned.resources} 条 processing 资源转为 failed(入库中断)`)
     }
@@ -105,7 +131,7 @@ async function startServer(App: Hono, AppDeps: Deps): Promise<void> {
   }
 
   try {
-    AppDeps.vectorDimensions = await probeVectorDimensions(AppDeps.pool)
+    AppDeps.vectorDimensions = await AppDeps.repo.dimensionsInStore()
     console.log(JSON.stringify({
       code: 'I_VECTOR_DIMENSIONS',
       message: `库中向量维度=${AppDeps.vectorDimensions.join(',') || '空'} 检索维度=${AppDeps.retrieverConfig.dimension}`,
@@ -121,41 +147,4 @@ async function startServer(App: Hono, AppDeps: Deps): Promise<void> {
   })
 
   console.log('Server listening on http://' + AppDeps.config.host + ':' + AppDeps.config.port)
-}
-
-// 库里 embeddings 实际存着哪些维度。检索只能消费与 retrieverConfig.dimension 相等的那些行，
-// 存在别的维度 = 换过 embedding 模型而旧数据没重嵌，此时问答必须明确拒绝而不是报「未找到相关内容」。
-async function probeVectorDimensions(Pool: Deps['pool']): Promise<number[]> {
-  const { rows } = await Pool.query(`SELECT DISTINCT dimension FROM embeddings ORDER BY dimension`)
-  return rows.map((row: { dimension: number }) => Number(row.dimension))
-}
-
-async function cleanupInterruptedIngest(Pool: Deps['pool']): Promise<CleanupResult> {
-  const client = await Pool.connect()
-  try {
-    await client.query('BEGIN')
-
-    const { rows } = await client.query(
-      `SELECT id FROM resources WHERE status = 'processing' AND deleted_at IS NULL`,
-    )
-    const ids: string[] = rows.map((r) => r.id as string)
-
-    if (ids.length > 0) {
-      await client.query(`DELETE FROM chunks WHERE resource_id = ANY($1::uuid[])`, [ids])
-      await client.query(
-        `UPDATE resources SET status = 'failed', error_reason = '入库中断', updated_at = now() WHERE id = ANY($1::uuid[])`,
-        [ids],
-      )
-    }
-
-    await client.query('COMMIT')
-    return { resources: ids.length }
-  } catch (err) {
-    await client.query('ROLLBACK').catch((rbErr) =>
-      console.error(JSON.stringify({ code: 'E_ROLLBACK', message: String(rbErr) })),
-    ) // 别用回滚自身的错顶掉真因
-    throw err
-  } finally {
-    client.release()
-  }
 }

@@ -4,8 +4,8 @@
  * POST 只负责校验 body + 装配 Recipe/KBData，真正入库交 Factory.assemble(recipe).run(data)。
  * 取消开关由管线自己持有并按 resourceId 登记在 Deps.inflight，本路由只是按按钮的人之一；
  * 客户端断连**不再**是取消来源（run 不接 c.req.raw.signal），批量提交后关页面不影响入库。
- * fetcher/parser 由来源在此定死（url→http/html，content→passthrough/text）；chunker/embedder 可由 body 覆盖，
- * 缺省值是注册表里的**策略名**（'legacy' / 'qwenembed'）——与 PipelineConfig.embeddingModel（写进 embeddings.model 的模型标识）分属两套名字，别混用。
+ * fetcher/parser 由来源在此定死（url→http/html，content→passthrough/text）；chunker 可由 body 覆盖，缺省 'legacy'（注册表里的策略名）。
+ * embed 不再走 body：它是装配层选定的 Deps.embedding（一行 model 句柄 + 标识 + 截维），随 Recipe 原样带进管线，写进 embeddings.model 的就是它的 modelId。
  * 失败映射：查重命中→409；建行后 failed→422（带 resource，failure.code 可为 E_CANCELLED / E_TIMEOUT / E_RESOURCE_GONE / E_INGEST_FAILED）；
  * 装配名不识别(E_UNKNOWN_STAGE)→400；id 非 UUID→400 E_BAD_ID；资源不存在或已软删→404 E_NOT_FOUND；
  * 无可取消任务→409 E_NOT_PROCESSING（状态不是 processing）/ 409 E_NOT_INFLIGHT（是 processing 但不在本进程登记里，重启遗留）；未预期→500。
@@ -17,21 +17,21 @@ import { IngestError } from '../../pipeline/pipelines'
 
 export { createResourcesRoute }
 
-import type { Repository } from '../../ports/repository'
+import type { EmbeddingTarget, Repo } from '../../adapter/contract'
 import type { PipelineFactory } from '../../pipeline/pipelines'
 import type { InflightRegistry } from '../../pipeline/inflight'
-import type { Recipe, KBData, PipelineConfig } from '../../pipeline/contracts'
+import type { Recipe, KBData } from '../../pipeline/contracts'
 
 interface ResourcesRouteDeps {
-  repo: Repository
+  repo: Repo
   factory: PipelineFactory
   inflight: InflightRegistry
-  pipelineConfig: PipelineConfig
+  embedding: EmbeddingTarget
 }
 
 function createResourcesRoute(Deps: ResourcesRouteDeps): Hono {
   const app = new Hono()
-  const { repo, factory, inflight, pipelineConfig } = Deps
+  const { repo, factory, inflight, embedding } = Deps
 
   app.delete('/:id', async (c) => {
     const id = c.req.param('id')
@@ -112,7 +112,7 @@ function createResourcesRoute(Deps: ResourcesRouteDeps): Hono {
     if (body === null || typeof body !== 'object') {
       return c.json({ code: 'E_BAD_JSON', message: '请求体需为 JSON 对象' }, 400)
     }
-    const b = body as { url?: unknown; content?: unknown; content_type?: unknown; title?: unknown; chunker?: unknown; embedder?: unknown }
+    const b = body as { url?: unknown; content?: unknown; content_type?: unknown; title?: unknown; chunker?: unknown }
 
     const url = typeof b.url === 'string' && b.url.trim() !== '' ? b.url.trim() : undefined
     const givenContent = typeof b.content === 'string' ? b.content : undefined
@@ -128,7 +128,6 @@ function createResourcesRoute(Deps: ResourcesRouteDeps): Hono {
     }
 
     const chunker = typeof b.chunker === 'string' && b.chunker.trim() !== '' ? b.chunker.trim() : 'legacy'
-    const embedder = typeof b.embedder === 'string' && b.embedder.trim() !== '' ? b.embedder.trim() : 'qwenembed'
     const title = typeof b.title === 'string' && b.title.trim() !== '' ? b.title.trim() : undefined
 
     let recipe: Recipe
@@ -143,14 +142,14 @@ function createResourcesRoute(Deps: ResourcesRouteDeps): Hono {
       if (protocol !== 'http:' && protocol !== 'https:') {
         return c.json({ code: 'E_BAD_URL', message: '仅支持 http/https' }, 400)
       }
-      recipe = { fetcher: 'http', parser: 'html', chunker, embedder, repo, config: pipelineConfig }
+      recipe = { fetcher: 'http', parser: 'html', chunker, embedding, repo }
       data = { content_type: 'url', url, ...(title ? { title } : {}) }
     } else {
       const ct = b.content_type
       if (ct !== 'markdown' && ct !== 'plaintext') {
         return c.json({ code: 'E_BAD_CONTENT_TYPE', message: 'content_type 只能是 markdown 或 plaintext' }, 400)
       }
-      recipe = { fetcher: 'passthrough', parser: 'text', chunker, embedder, repo, config: pipelineConfig }
+      recipe = { fetcher: 'passthrough', parser: 'text', chunker, embedding, repo }
       data = { content_type: ct, content: content!, ...(title ? { title } : {}) }
     }
 

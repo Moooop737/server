@@ -2,10 +2,10 @@
  * 配置装载 —— 从 process.env 读并校验，缺必需项/非法值 fail-fast（抛 ConfigError，由入口转 exit）。
  * loadConfig() 是唯一入口；numOrThrow() 是整数型 env 的解析 + 范围校验工具，floatOrThrow() 管小数（检索阈值）。
  * embeddingDimensions 非 1024 不阻断、仅 warn：P1 只建 1024 档 partial HNSW，其它维度检索退顺序扫描（结果仍对、只是慢）。见 addendum A / AD-4。
- * CHAT_PROVIDER 仅支持 deepseek | dashscope；host 固定 127.0.0.1（AD-8 仅本地监听）。
+ * CHAT_MODEL 只装载不校验（缺失＝今天不选，填了却不在 model 清单里由 bootstrap 点名退出）；服务商与它的 Key 归 adapter/provider 登记表，本文件不再认 CHAT_PROVIDER。host 固定 127.0.0.1（AD-8 仅本地监听）。
  */
 
-export { loadConfig }
+export { loadConfig , getEnv }
 
 export interface AppConfig {
   host: string
@@ -14,8 +14,7 @@ export interface AppConfig {
   ollamaBaseUrl: string
   embeddingModel: string
   embeddingDimensions: number
-  chatProvider: 'deepseek' | 'dashscope'
-  chatApiKey: string
+  chatModel: string | undefined
   retrievalVectorTopK: number
   retrievalLexicalTopK: number
   retrievalMinSimilarity: number
@@ -32,11 +31,6 @@ export class ConfigError extends Error {
   }
 }
 
-const CHAT_KEY_BY_PROVIDER = {
-  deepseek: 'DEEPSEEK_API_KEY',
-  dashscope: 'DASHSCOPE_API_KEY',
-} as const
-
 function loadConfig(): AppConfig {
   const get = (name: string): string | undefined => {
     const v = process.env[name]?.trim()
@@ -51,14 +45,7 @@ function loadConfig(): AppConfig {
   if (!ollamaBaseUrl) missing.push('OLLAMA_BASE_URL')
   if (!embeddingModel) missing.push('EMBEDDING_MODEL')
 
-  const providerRaw = (get('CHAT_PROVIDER') ?? 'deepseek').toLowerCase()
-  if (providerRaw !== 'deepseek' && providerRaw !== 'dashscope') {
-    throw new ConfigError('E_CONFIG_INVALID', `CHAT_PROVIDER 只支持 deepseek | dashscope，收到: ${providerRaw}`)
-  }
-  const chatProvider = providerRaw as 'deepseek' | 'dashscope'
-  const chatKeyEnv = CHAT_KEY_BY_PROVIDER[chatProvider]
-  const chatApiKey = get(chatKeyEnv)
-  if (!chatApiKey) missing.push(chatKeyEnv)
+  const chatModel = get('CHAT_MODEL')
 
   if (missing.length > 0) {
     throw new ConfigError('E_CONFIG_MISSING', `必需的环境变量缺失: ${missing.join(', ')}`)
@@ -84,8 +71,7 @@ function loadConfig(): AppConfig {
     ollamaBaseUrl: ollamaBaseUrl!,
     embeddingModel: embeddingModel!,
     embeddingDimensions,
-    chatProvider,
-    chatApiKey: chatApiKey!,
+    chatModel,
     retrievalVectorTopK,
     retrievalLexicalTopK,
     retrievalMinSimilarity,
@@ -123,4 +109,9 @@ function numOrThrow(
     throw new ConfigError('E_CONFIG_INVALID', `${Name} 需为 ${Min}-${Max} 的整数，收到: ${Raw}`)
   }
   return v
+}
+
+const getEnv = (name: string): string | undefined => {
+    const v = process.env[name]?.trim()
+    return v ? v : undefined
 }

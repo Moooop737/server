@@ -13,14 +13,13 @@ import { RETRIEVER_RECIPE_NAMES } from '../../retrieve/recipes'
 
 export { createChatRoute }
 
-import type { Pool } from 'pg'
-import type { Repository } from '../../ports/repository'
+import type { EmbeddingTarget, Repo } from '../../adapter/contract'
 import type { RetrieverConfig, RetrieverRecipe } from '../../retrieve/contracts'
 import type { RetrieverFactory } from '../../retrieve/retrievers'
 
 interface ChatRouteDeps {
-  repo: Repository
-  pool: Pool
+  repo: Repo
+  embedding: EmbeddingTarget
   config: RetrieverConfig
   retrieverFactory: RetrieverFactory
   getVectorDimensions: () => number[] | null
@@ -28,7 +27,7 @@ interface ChatRouteDeps {
 
 function createChatRoute(Deps: ChatRouteDeps): Hono {
   const app = new Hono()
-  const { repo, pool, config, retrieverFactory, getVectorDimensions } = Deps
+  const { repo, embedding, config, retrieverFactory, getVectorDimensions } = Deps
 
   app.post('/', async (c) => {
     const body = (await c.req.json().catch(() => null)) as { query?: unknown; limit?: unknown } | null
@@ -39,7 +38,7 @@ function createChatRoute(Deps: ChatRouteDeps): Hono {
 
     const recipe: RetrieverRecipe = {
       ...RETRIEVER_RECIPE_NAMES,
-      deps: { pool, config, vectorDimensions: getVectorDimensions() },
+      deps: { repo, embedding, config, vectorDimensions: getVectorDimensions() },
     }
 
     try {

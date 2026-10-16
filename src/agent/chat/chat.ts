@@ -12,11 +12,11 @@ export { createChat, ChatError }
 
 export type { Chat, ChatAnswer, ChatDeps }
 
-import type { Repository } from '../../ports/repository'
+import type { Repo } from '../../adapter/contract'
 import type { Retriever, RetrievalResult } from '../../retrieve/contracts'
 
 interface ChatDeps {
-  repo: Repository
+  repo: Repo
   retriever: Retriever
 }
 

@@ -7,27 +7,19 @@
  */
 
 import { Hono } from 'hono'
-import { ChatError, createChat } from '../../agent/chat/chat'
+import { createChat } from '../../agent/chat/chat'
 import { RetrieverError } from '../../retrieve/retrievers'
 import { RETRIEVER_RECIPE_NAMES } from '../../retrieve/recipes'
 
 export { createChatRoute }
 
-import type { EmbeddingTarget, Repo } from '../../adapter/contract'
-import type { RetrieverConfig, RetrieverRecipe } from '../../retrieve/contracts'
-import type { RetrieverFactory } from '../../retrieve/retrievers'
+import type { Deps } from '../../bootstrap'
+import type { LanguageModelId } from '../../adapter/contract'
+import type { RetrieverRecipe } from '../../retrieve/contracts'
 
-interface ChatRouteDeps {
-  repo: Repo
-  embedding: EmbeddingTarget
-  config: RetrieverConfig
-  retrieverFactory: RetrieverFactory
-  getVectorDimensions: () => number[] | null
-}
-
-function createChatRoute(Deps: ChatRouteDeps): Hono {
+function createChatRoute(AppDeps: Deps): Hono {
   const app = new Hono()
-  const { repo, embedding, config, retrieverFactory, getVectorDimensions } = Deps
+  const { repo, embedding, retrieverConfig: config, retrieverFactory } = AppDeps
 
   app.post('/', async (c) => {
     const body = (await c.req.json().catch(() => null)) as { query?: unknown; limit?: unknown } | null
@@ -38,33 +30,16 @@ function createChatRoute(Deps: ChatRouteDeps): Hono {
 
     const recipe: RetrieverRecipe = {
       ...RETRIEVER_RECIPE_NAMES,
-      deps: { repo, embedding, config, vectorDimensions: getVectorDimensions() },
+      deps: { repo, embedding, config, vectorDimensions: AppDeps.vectorDimensions },
     }
 
     try {
-      const chat = createChat({ repo, retriever: retrieverFactory.assemble(recipe) })
-      const reply = await chat.ask(body.query, limit)
-      return c.json({
-        answer: reply.answer,
-        hits: (reply.result?.hits ?? []).map((hit) => ({
-          chunkId: hit.chunk.id,
-          resourceId: hit.chunk.resource_id,
-          chunkIndex: hit.chunk.chunk_index,
-          startOffset: hit.chunk.start_offset,
-          endOffset: hit.chunk.end_offset,
-          docTitle: hit.docTitle,
-          source: hit.source,
-          dataUri: hit.dataUri,
-          score: hit.score,
-          similarity: hit.similarity,
-          lexicalScore: hit.lexicalScore,
-          content: hit.chunk.content,
-        })),
-        vectorCount: reply.result?.vectorCount ?? 0,
-        lexicalCount: reply.result?.lexicalCount ?? 0,
-      })
+      const retriever = retrieverFactory.assemble(recipe)
+      const chat = createChat({ models: AppDeps.models, chatModel: AppDeps.config.chatModel as LanguageModelId })
+      const result = await chat.ask(body.query, c.req.raw.signal)
+      return result.toUIMessageStreamResponse()
     } catch (err) {
-      if (err instanceof ChatError || err instanceof RetrieverError) {
+      if (err instanceof RetrieverError) {
         if (err.code === 'E_EMPTY_QUERY' || err.code === 'E_UNKNOWN_STAGE') {
           return c.json({ code: err.code, message: err.message }, 400)
         }

@@ -16,21 +16,12 @@ import { RETRIEVER_RECIPE_NAMES } from '../../retrieve/recipes'
 
 export { createRetrieveRoute }
 
-import type { EmbeddingTarget, Repo } from '../../adapter/contract'
-import type { RetrieverConfig, RetrieverRecipe } from '../../retrieve/contracts'
-import type { RetrieverFactory } from '../../retrieve/retrievers'
+import type { Deps } from '../../bootstrap'
+import type { RetrieverRecipe } from '../../retrieve/contracts'
 
-interface RetrieveRouteDeps {
-  repo: Repo
-  embedding: EmbeddingTarget
-  config: RetrieverConfig
-  factory: RetrieverFactory
-  getVectorDimensions: () => number[] | null
-}
-
-function createRetrieveRoute(Deps: RetrieveRouteDeps): Hono {
+function createRetrieveRoute(AppDeps: Deps): Hono {
   const app = new Hono()
-  const { repo, embedding, config, factory, getVectorDimensions } = Deps
+  const { repo, embedding, retrieverConfig: config, retrieverFactory: factory } = AppDeps
 
   app.post('/', async (c) => {
     const body = (await c.req.json().catch(() => null)) as { query?: unknown; limit?: unknown } | null
@@ -41,7 +32,7 @@ function createRetrieveRoute(Deps: RetrieveRouteDeps): Hono {
 
     const recipe: RetrieverRecipe = {
       ...RETRIEVER_RECIPE_NAMES,
-      deps: { repo, embedding, config, vectorDimensions: getVectorDimensions() },
+      deps: { repo, embedding, config, vectorDimensions: AppDeps.vectorDimensions },
     }
 
     try {

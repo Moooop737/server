@@ -5,7 +5,7 @@
  * CHAT_MODEL 只装载不校验（缺失＝今天不选，填了却不在 model 清单里由 bootstrap 点名退出）；服务商与它的 Key 归 adapter/provider 登记表，本文件不再认 CHAT_PROVIDER。host 固定 127.0.0.1（AD-8 仅本地监听）。
  */
 
-export { loadConfig , getEnv }
+export { loadConfig, getEnv }
 
 export interface AppConfig {
   host: string
@@ -14,7 +14,7 @@ export interface AppConfig {
   ollamaBaseUrl: string
   embeddingModel: string
   embeddingDimensions: number
-  chatModel: string | undefined
+  chatModel: string
   retrievalVectorTopK: number
   retrievalLexicalTopK: number
   retrievalMinSimilarity: number
@@ -45,7 +45,8 @@ function loadConfig(): AppConfig {
   if (!ollamaBaseUrl) missing.push('OLLAMA_BASE_URL')
   if (!embeddingModel) missing.push('EMBEDDING_MODEL')
 
-  const chatModel = get('CHAT_MODEL')
+  const chatModel = get('CHAT_MODEL')!
+  if (!chatModel) missing.push('CHAT_MODEL')
 
   if (missing.length > 0) {
     throw new ConfigError('E_CONFIG_MISSING', `必需的环境变量缺失: ${missing.join(', ')}`)
@@ -112,6 +113,6 @@ function numOrThrow(
 }
 
 const getEnv = (name: string): string | undefined => {
-    const v = process.env[name]?.trim()
-    return v ? v : undefined
+  const v = process.env[name]?.trim()
+  return v ? v : undefined
 }

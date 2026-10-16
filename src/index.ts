@@ -14,8 +14,8 @@ import { createChatRoute } from './routes/chat/chat'
 const { app, deps } = bootstrap()
 
 app.route('/', createHealthRoute(createHealthProbes(deps.config, deps.repo)))
-app.route('/resources', createResourcesRoute({ repo: deps.repo, factory: deps.pipelineFactory, embedding: deps.embedding, inflight: deps.inflight }))
-app.route('/retrieve', createRetrieveRoute({ repo: deps.repo, embedding: deps.embedding, config: deps.retrieverConfig, factory: deps.retrieverFactory, getVectorDimensions: () => deps.vectorDimensions }))
-app.route('/chat', createChatRoute({ repo: deps.repo, embedding: deps.embedding, config: deps.retrieverConfig, retrieverFactory: deps.retrieverFactory, getVectorDimensions: () => deps.vectorDimensions }))
+app.route('/resources', createResourcesRoute(deps))
+app.route('/retrieve', createRetrieveRoute(deps))
+app.route('/chat', createChatRoute(deps))
 
 void startServer(app, deps)

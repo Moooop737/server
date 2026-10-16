@@ -50,7 +50,6 @@ function bootstrap(): { app: Hono; deps: Deps } {
 
 function assertChatModel(AppDeps: Deps): void {
   const Name = AppDeps.config.chatModel
-  if (Name === undefined) return
   if (Object.hasOwn(AppDeps.models.languageModels, Name)) return
   console.error(JSON.stringify({
     code: 'E_CHAT_MODEL',

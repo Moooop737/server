@@ -17,21 +17,12 @@ import { IngestError } from '../../pipeline/pipelines'
 
 export { createResourcesRoute }
 
-import type { EmbeddingTarget, Repo } from '../../adapter/contract'
-import type { PipelineFactory } from '../../pipeline/pipelines'
-import type { InflightRegistry } from '../../pipeline/inflight'
+import type { Deps } from '../../bootstrap'
 import type { Recipe, KBData } from '../../pipeline/contracts'
 
-interface ResourcesRouteDeps {
-  repo: Repo
-  factory: PipelineFactory
-  inflight: InflightRegistry
-  embedding: EmbeddingTarget
-}
-
-function createResourcesRoute(Deps: ResourcesRouteDeps): Hono {
+function createResourcesRoute(AppDeps: Deps): Hono {
   const app = new Hono()
-  const { repo, factory, inflight, embedding } = Deps
+  const { repo, pipelineFactory: factory, inflight, embedding } = AppDeps
 
   app.delete('/:id', async (c) => {
     const id = c.req.param('id')

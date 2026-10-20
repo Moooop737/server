@@ -1,16 +1,16 @@
 /**
- * 启动装配 —— bootstrap() 读配置、组装 Deps（进程级入库管线工厂 + 检索工厂）、建空 app 并交出；startServer() 清理中断遗留、探一次向量维度、然后监听。
+ * 启动装配 —— bootstrap() 读配置、组装 Deps、建空 app 并交出；startServer() 清理中断遗留、探一次向量维度、然后监听。
  * 缺必需 env → loadAppConfig() 打印错误并 process.exit(1)；cleanup 与维度体检失败都只记日志、不阻断启动。
  * config.chatModel 填了却不在 model 清单里 → assertChatModel 点名在册句柄并 exit(1)（env 指错行是人写错，与「缺 Key 静默缺席」两回事）；没填则不选，等消费它的 build 再收口。
- * Deps.ingestFactory / Deps.retrieverFactory 都是进程级单例工厂，路由各自在请求里 assemble(Recipe)；
- * Deps.inflight 是进程级取消登记处，工厂持有它、路由也用它（同一个实例，取消才按得到）。
+ * IngestFactory / RetrieverFactory / InflightRegistry 用 @singleton() 自注册，由容器交出的进程级单例；
+ * 三条路由用 @inject 取它们，本文件不再构造它们；管线和工厂仍各自在请求里 assemble(Recipe)。
  * Deps.repo 是基础层交出的服务，连接池对它来说是不可见的内部细节；本文件不再出现任何 SQL。
  * Deps.models 是 SDK 句柄，装配期只兑换一次（providerRegistry → modelRegistry），路由共享同一批实例；startServer 头一行把它打成 I_MODELS，登记制的静默缺席靠这行现形。
  * Deps.embedding 是装配层按 EMBEDDING_MODEL 从 model 清单里选定的那一行（句柄 + 标识 + 截维），入库与检索共用同一个；不在册 ⇒ E_EMBEDDING_MODEL 点名退出。
  * retrieverConfig 由 AppConfig 派生，供路由装 Recipe（策略名 + 活依赖 + 旋钮）；入库侧不吃旋钮 —— 三个 stage 都无构造参数。
  * Deps.vectorDimensions 是唯一的「启动后后填」字段，三态：buildDeps 先给 null，startServer 在 serve() 之前填成真值数组 ⇒ 路由不可能读到半填状态。
  * 体检失败就留在 null，检索会因此**拒绝作答**（E_DIMENSION_UNKNOWN）而不是退回 BM25-only 静默命中 —— 见 retrieve/retrievers.ts。
- * 依赖：config / adapter(contract) / ingest(recipes,inflight,ingest) / retrieve(recipes,retrievers)。
+ * 依赖：config 与 adapter(contract) 供 Deps 那六格；另 import 的两个工厂与取消登记处本文件不消费，只保证各自的 @singleton() 注册被跑到。
  */
 
 import { serve } from "@hono/node-server"
@@ -35,10 +35,7 @@ interface Deps {
   repo: Repo
   models: RegistedModels
   embedding: EmbeddingTarget
-  inflight: InflightRegistry
-  ingestFactory: IngestFactory
   retrieverConfig: RetrieverConfig
-  retrieverFactory: RetrieverFactory
   vectorDimensions: number[] | null
 }
 
@@ -73,8 +70,7 @@ function buildDeps(Config: AppConfig): Deps {
   const repo = createRepo(Config)
   const models = modelRegistry(providerRegistry())
   const embedding = pickEmbeddingTarget(models, Config)
-  const inflight = new InflightRegistry()
-  const ingestFactory = new IngestFactory(createStageRegistry(), inflight)
+
   const retrieverConfig: RetrieverConfig = {
     dimension: Config.embeddingDimensions,
     vectorTopK: Config.retrievalVectorTopK,
@@ -83,16 +79,12 @@ function buildDeps(Config: AppConfig): Deps {
     rrfK: Config.retrievalRrfK,
     defaultLimit: Config.retrievalDefaultLimit,
   }
-  const retrieverFactory = new RetrieverFactory(createRetrieverStageRegistry())
   return {
     config: Config,
     repo,
     models,
     embedding,
-    inflight,
-    ingestFactory,
     retrieverConfig,
-    retrieverFactory,
     vectorDimensions: null,
   }
 }

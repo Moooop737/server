@@ -12,10 +12,13 @@
 
 export { RetrieverFactory, RetrieverError }
 
+import 'reflect-metadata'
 import { embedMany } from 'ai'
 
 import type { Retriever, RetrievedChunk } from './contracts'
 import type { VectorSearcher, LexicalSearcher, Fuser, RetrieverRecipe, RetrieverStageRegistry } from './contracts'
+import { singleton } from 'tsyringe';
+import { createRetrieverStageRegistry } from './recipes';
 
 class RetrieverError extends Error {
   readonly code: string
@@ -26,11 +29,12 @@ class RetrieverError extends Error {
   }
 }
 
+@singleton()
 class RetrieverFactory {
   private readonly reg: RetrieverStageRegistry
 
-  constructor(Registry: RetrieverStageRegistry) {
-    this.reg = Registry
+  constructor() {
+    this.reg = createRetrieverStageRegistry()
   }
 
   assemble(Recipe: RetrieverRecipe): Retriever {

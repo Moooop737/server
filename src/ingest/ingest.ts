@@ -11,13 +11,16 @@
  * 依赖：contracts(类型) / adapter 的门(Repo,EmbeddingTarget,embedChunks,Resource) / inflight(取消登记处) / recipes(注册表经构造注入)。
  */
 
+import 'reflect-metadata'
 import { embedChunks } from '../adapter/contract'
 
 export { IngestFactory, IngestError }
 
 import type { Recipe, KBData, Ingest, IngestResult, IngestContext, StageRegistry } from './contracts'
-import type { InflightRegistry } from './inflight'
+import { InflightRegistry } from './inflight'
 import type { Resource } from '../adapter/contract'
+import { container, singleton } from 'tsyringe';
+import { createStageRegistry } from './recipes';
 
 class IngestError extends Error {
   readonly code: string
@@ -28,13 +31,14 @@ class IngestError extends Error {
   }
 }
 
+@singleton()
 class IngestFactory {
   private readonly reg: StageRegistry
   private readonly inflight: InflightRegistry
 
-  constructor(Registry: StageRegistry, Inflight: InflightRegistry) {
-    this.reg = Registry
-    this.inflight = Inflight
+  constructor() {
+    this.reg = createStageRegistry()
+    this.inflight = container.resolve(InflightRegistry)
   }
 
   assemble(Recipe: Recipe): Ingest {

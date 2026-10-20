@@ -6,51 +6,62 @@
  * 与 /retrieve 的分工：本端点带库状态判定（空库／全无 ready），/retrieve 只回原始融合结果、供单独验检索。
  */
 
+import 'reflect-metadata'
 import { Hono } from 'hono'
+import { inject, injectable } from 'tsyringe'
 import { createChat } from '../../agent/chat/chat'
-import { RetrieverError } from '../../retrieve/retrievers'
+import { RetrieverError, RetrieverFactory } from '../../retrieve/retrievers'
 import { RETRIEVER_RECIPE_NAMES } from '../../retrieve/recipes'
 
-export { createChatRoute }
+export { ChatRoute }
 
 import type { Deps } from '../../bootstrap'
 import type { LanguageModelId } from '../../adapter/contract'
 import type { RetrieverRecipe } from '../../retrieve/contracts'
 
-function createChatRoute(AppDeps: Deps): Hono {
-  const app = new Hono()
-  const { repo, embedding, retrieverConfig: config, retrieverFactory } = AppDeps
+@injectable()
+class ChatRoute {
+  private readonly factory: RetrieverFactory
 
-  app.post('/', async (c) => {
-    const body = (await c.req.json().catch(() => null)) as { query?: unknown; limit?: unknown } | null
-    if (!body || typeof body.query !== 'string') {
-      return c.json({ code: 'E_BAD_BODY', message: 'body.query 需为字符串' }, 400)
-    }
-    const limit = typeof body.limit === 'number' && Number.isInteger(body.limit) && body.limit > 0 ? body.limit : undefined
+  constructor(@inject(RetrieverFactory) Factory: RetrieverFactory) {
+    this.factory = Factory
+  }
 
-    const recipe: RetrieverRecipe = {
-      ...RETRIEVER_RECIPE_NAMES,
-      deps: { repo, embedding, config, vectorDimensions: AppDeps.vectorDimensions },
-    }
+  build(AppDeps: Deps): Hono {
+    const app = new Hono()
+    const { repo, embedding, retrieverConfig: config } = AppDeps
 
-    try {
-      const retriever = retrieverFactory.assemble(recipe)
-      const chat = createChat({ models: AppDeps.models, chatModel: AppDeps.config.chatModel as LanguageModelId })
-      const result = await chat.ask(body.query, c.req.raw.signal)
-      return result.toUIMessageStreamResponse()
-    } catch (err) {
-      if (err instanceof RetrieverError) {
-        if (err.code === 'E_EMPTY_QUERY' || err.code === 'E_UNKNOWN_STAGE') {
-          return c.json({ code: err.code, message: err.message }, 400)
-        }
-        if (err.code === 'E_DIMENSION_MISMATCH' || err.code === 'E_DIMENSION_UNKNOWN') {
-          return c.json({ code: err.code, message: err.message }, 409)
-        }
+    app.post('/', async (c) => {
+      const body = (await c.req.json().catch(() => null)) as { query?: unknown; limit?: unknown } | null
+      if (!body || typeof body.query !== 'string') {
+        return c.json({ code: 'E_BAD_BODY', message: 'body.query 需为字符串' }, 400)
       }
-      console.error(JSON.stringify({ code: 'E_CHAT', message: String(err) }))
-      return c.json({ code: 'E_CHAT', message: '问答失败' }, 500)
-    }
-  })
+      const limit = typeof body.limit === 'number' && Number.isInteger(body.limit) && body.limit > 0 ? body.limit : undefined
 
-  return app
+      const recipe: RetrieverRecipe = {
+        ...RETRIEVER_RECIPE_NAMES,
+        deps: { repo, embedding, config, vectorDimensions: AppDeps.vectorDimensions },
+      }
+
+      try {
+        const retriever = this.factory.assemble(recipe)
+        const chat = createChat({ models: AppDeps.models, chatModel: AppDeps.config.chatModel as LanguageModelId })
+        const result = await chat.ask(body.query, c.req.raw.signal)
+        return result.toUIMessageStreamResponse()
+      } catch (err) {
+        if (err instanceof RetrieverError) {
+          if (err.code === 'E_EMPTY_QUERY' || err.code === 'E_UNKNOWN_STAGE') {
+            return c.json({ code: err.code, message: err.message }, 400)
+          }
+          if (err.code === 'E_DIMENSION_MISMATCH' || err.code === 'E_DIMENSION_UNKNOWN') {
+            return c.json({ code: err.code, message: err.message }, 409)
+          }
+        }
+        console.error(JSON.stringify({ code: 'E_CHAT', message: String(err) }))
+        return c.json({ code: 'E_CHAT', message: '问答失败' }, 500)
+      }
+    })
+
+    return app
+  }
 }

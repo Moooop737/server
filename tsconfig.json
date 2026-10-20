@@ -36,6 +36,9 @@
     // Recommended Options
     "strict": true,
     "jsx": "react-jsx",
+    // tsyringe needs legacy (parameter) decorators. emitDecoratorMetadata is deliberately NOT enabled:
+    // tsx/vitest run through esbuild, which never emits it, so by-type autowiring cannot work here anyway.
+    "experimentalDecorators": true,
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "noUncheckedSideEffectImports": true,

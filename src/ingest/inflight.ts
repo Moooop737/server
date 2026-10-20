@@ -7,8 +7,12 @@
  * remove 必须比对 controller：同一个 id 若被重新入库复用，迟到的 finally 不该把新任务摘掉。
  */
 
+import 'reflect-metadata'
+import { singleton } from "tsyringe";
+
 export { InflightRegistry }
 
+@singleton()
 class InflightRegistry {
   private readonly inflight = new Map<string, AbortController>()
 

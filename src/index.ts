@@ -1,5 +1,5 @@
 /**
- * 入口 / 装配 —— 先 resolve AppConfig（env 装载与校验）与三条路由（顺带触发 EmbeddingTarget / ChatHandle 两个名字位校验），再 await 启动清扫，最后才 serve()。
+ * 入口 / 装配 —— 先 resolve AppConfig（env 装载与校验）与三条路由（顺带触发 EmbeddingHandle / ChatHandle 两个名字位校验），再 await 启动清扫，最后才 serve()。
  * 本文件只做装配、不含业务判定：探针定义见 health/probes.ts，端点逻辑见 routes/ 各文件。
  * 加服务 = 往 createHealthProbes 加一项；加路由 = 路由文件里写 @injectable() 的 class，在此 container.resolve(X).build()。
  * 三条路由的依赖全部由 tsyringe 交（各类自己的 @singleton() 在模块被 import 时注册），本文件不再往下传袋子。

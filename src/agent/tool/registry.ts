@@ -1,16 +1,15 @@
-import { type ToolSet, tool } from "ai"
-import { RetrieverError } from "../../retrieve/retrievers";
-import { z } from "zod"
-export { RegistedTools }
+/**
+ * 工具登记表 —— 键名即下发给前端的 part 名（`tool-${NAME}`），改键名要连前端一起改。
+ * 依赖走闭包，所以这里没有 contextSchema：streamText 那侧的 toolsContext 被推成 never（传了就是编译错），
+ *   Retriever 由 ChatService 构造期经 buildAgentTools 烧进每只工具的 execute。
+ */
 
-const RegistedTools = {
-    retrive: tool({
-        description: "Retrive data from user's knowledge base",
-        inputSchema: z.object({
-            prompt : z.string().describe('search input prompt to knowledge base'),
-            topK : z.number().gt(3).lt(20).describe('output knowledge rows you need'),
-        }),
-        execute: async ({ prompt, topK }) => ({ prompt, topK }),
-    })
+export { buildAgentTools }
 
-} as const satisfies ToolSet 
+import { buildRetriveTool } from './retrive'
+
+import type { Retriever } from '../../retrieve/contracts'
+
+function buildAgentTools(Retriever: Retriever) {
+  return { retrive: buildRetriveTool(Retriever) }
+}

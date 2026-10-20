@@ -8,11 +8,11 @@
 export { embedChunks }
 
 import { embedMany } from 'ai'
-import type { EmbeddingTarget } from '../contract'
+import type { EmbeddingHandle } from '../contract'
 
 const EMBED_TIMEOUT_MS = 30_000
 
-async function embedChunks(Texts: string[], Target: EmbeddingTarget, Signal?: AbortSignal): Promise<number[][]> {
+async function embedChunks(Texts: string[], Target: EmbeddingHandle, Signal?: AbortSignal): Promise<number[][]> {
   const signals = [AbortSignal.timeout(EMBED_TIMEOUT_MS)]
   if (Signal) signals.push(Signal)
 

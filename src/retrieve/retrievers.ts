@@ -9,17 +9,21 @@
  * search 的次序：掐空问句 → 现查维度并判混维 → embed → 向量路 →（有 lexical 装配位才跑）BM25 路 → Fuser 融合并按 limit 截。
  * 空库 / 全无 ready 的判定不在这里：那是 resources 面的计数，属于问答编排的下一步，Retriever 只回答「这两路各命中几条」。
  * 结果码：E_EMPTY_QUERY 空/纯空白提问 / E_DIMENSION_MISMATCH 库中混着异维向量 / E_UNKNOWN_STAGE 策略名查无。
+ * RetrieverHandle 住在 adapter/contract.ts（与 ChatHandle / EmbeddingHandle 同族，门统一交句柄），是 assemble 的唯一调用者：
+ *   它在构造期用常量 Recipe（RETRIEVER_RECIPE_NAMES）加三个单例兑换一只 Retriever 并持有，路由与工具都注入它，不再各自拼 Recipe。
+ *   持有同一只是安全的：维度判定在 search 里每请求现查，不在构造期凝固。
+ * assemble 保持 public 只因为 private 跨类不可见，不是对外的装配入口。
  */
 
 export { RetrieverFactory, RetrieverError }
 
 import 'reflect-metadata'
 import { embedMany } from 'ai'
+import { singleton } from 'tsyringe'
+import { createRetrieverStageRegistry } from './recipes'
 
 import type { Retriever, RetrievedChunk } from './contracts'
 import type { VectorSearcher, LexicalSearcher, Fuser, RetrieverRecipe, RetrieverStageRegistry } from './contracts'
-import { singleton } from 'tsyringe';
-import { createRetrieverStageRegistry } from './recipes';
 
 class RetrieverError extends Error {
   readonly code: string

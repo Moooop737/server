@@ -17,7 +17,7 @@ import { Hono } from 'hono'
 import { inject, injectable } from 'tsyringe'
 import { IngestError, IngestFactory } from '../../ingest/ingest'
 import { InflightRegistry } from '../../ingest/inflight'
-import { PostgresRepo, EmbeddingTarget } from '../../adapter/contract'
+import { PostgresRepo, EmbeddingHandle } from '../../adapter/contract'
 
 export { ResourcesRoute }
 
@@ -29,13 +29,13 @@ class ResourcesRoute {
   private readonly factory: IngestFactory
   private readonly inflight: InflightRegistry
   private readonly repo: Repo
-  private readonly embedding: EmbeddingTarget
+  private readonly embedding: EmbeddingHandle
 
   constructor(
     @inject(IngestFactory) Factory: IngestFactory,
     @inject(InflightRegistry) Inflight: InflightRegistry,
     @inject(PostgresRepo) Repo: Repo,
-    @inject(EmbeddingTarget) Embedding: EmbeddingTarget,
+    @inject(EmbeddingHandle) Embedding: EmbeddingHandle,
   ) {
     this.factory = Factory
     this.inflight = Inflight

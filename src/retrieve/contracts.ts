@@ -6,10 +6,10 @@
  *   ingest 的 stage 不碰库，repo 由 assemble 自己捆，所以那边只需要策略名。
  * · Retriever / RetrievalResult / RetrievedChunk 这三个「可执行契约」也住这里 —— 对齐 ingest 的 Ingest/IngestResult。
  *   RetrievedChunk 直接 extends 门里的 ChunkCandidate 再加 score，字段清单不在本层重抄一遍（改一侧必然要同步另一侧的那种）。
- *   协作者（Repo 与 EmbeddingTarget）一律来自 adapter/contract.ts 那道门，本层不再自己声明端口；embed 不在注册表里，它是装配选定的一行句柄。
+ *   协作者（Repo 与 EmbeddingHandle）一律来自 adapter/contract.ts 那道门，本层不再自己声明端口；embed 不在注册表里，它是装配选定的一行句柄。
  */
 
-import type { ChunkCandidate, EmbeddingTarget, Repo } from '../adapter/contract'
+import type { ChunkCandidate, EmbeddingHandle, Repo } from '../adapter/contract'
 import type { AppConfig } from '../config'
 
 export type {
@@ -20,7 +20,7 @@ export type {
 
 interface RetrieverDeps {
   repo: Repo
-  embedding: EmbeddingTarget
+  embedding: EmbeddingHandle
   config: AppConfig
 }
 

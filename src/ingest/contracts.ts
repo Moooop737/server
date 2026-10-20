@@ -1,11 +1,11 @@
-import type { EmbeddingTarget, Repo, Resource } from '../adapter/contract'
+import type { EmbeddingHandle, Repo, Resource } from '../adapter/contract'
 
 // ── 工厂输入：装配规格（无数据）──
 export interface Recipe {
   fetcher: string   // 'http' | 'passthrough'
   parser: string    // 'html' | 'text'
   chunker: string   // 'legacy'
-  embedding: EmbeddingTarget  // 装配层从 model 清单选定的那一行，入库与检索共用同一个
+  embedding: EmbeddingHandle  // 装配层从 model 清单选定的那一行，入库与检索共用同一个
   repo: Repo
 }
 

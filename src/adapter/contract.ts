@@ -6,8 +6,8 @@
  * ping / dimensionsInStore / markInterruptedAsFailed / vectorCandidates / lexicalCandidates。
  * ChunkCandidate 就是检索命中去掉名次分那一位 —— score 由融合侧产出，不该由基础层造，
  * 所以两条候选查询交出 ChunkCandidate，retrieve/search/ 的两个适配器补上 score: 0 再交给 Retriever。
- * EmbeddingTarget 与 ChatHandle 是句柄选择位，都是 @singleton() 类：各自拿 AppConfig 的名字（EMBEDDING_MODEL / CHAT_MODEL）去 ModelRegistry 的两张表里兑换那一行，名字不在册就当场点名退出（E_EMBEDDING_MODEL / E_CHAT_MODEL）—— 选择与校验住在同一个构造里，别处不再自己做这个名字兑换，也不再拿 ! 兜住查不到的情况。
- * EmbeddingTarget 交出的是三位（句柄 + 写进 embeddings.model 的标识 + 本次要截到几维），ChatHandle 只交句柄；
+ * EmbeddingHandle 与 ChatHandle 是句柄选择位，都是 @singleton() 类：各自拿 AppConfig 的名字（EMBEDDING_MODEL / CHAT_MODEL）去 ModelRegistry 的两张表里兑换那一行，名字不在册就当场点名退出（E_EMBEDDING_MODEL / E_CHAT_MODEL）—— 选择与校验住在同一个构造里，别处不再自己做这个名字兑换，也不再拿 ! 兜住查不到的情况。
+ * EmbeddingHandle 交出的是三位（句柄 + 写进 embeddings.model 的标识 + 本次要截到几维），ChatHandle 只交句柄；
  * 维度不进 model 表 —— SDK 句柄没有 dimensions 位，它是调用选项，env 的 EMBEDDING_DIMENSIONS 才是它的来源。
  * 三个 Ollama 探针是原生只读 HTTP（/api/version、/api/tags、/api/ps），不是 SDK，只是服务商接入的一部分。
  * SDK 这几格交的都是 @singleton() 类：new ModelRegistry() 内部调 providerRegistry()（按 env 里在位的 Key 造服务商，缺 Key 不进表、不报错）再兑换成句柄。
@@ -27,7 +27,7 @@
  * 实体形状不再有跨层共享盒（原 `types/` 已删）：别盒要用哪一位，由本门逐个点名交出（现交 Resource）。
  */
 
-export { PostgresRepo, EmbeddingTarget, ChatHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, ModelRegistry, embedChunks }
+export {RetrieverHandle, PostgresRepo, EmbeddingHandle, ChatHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, ModelRegistry, embedChunks }
 export type { Repo, ChunkCandidate, Resource, OllamaModelDetails, OllamaModelEntry, OllamaModelStatus, ProviderEntryName, LanguageModelId, EmbeddingModelId, RegistedProviders, RegistedModels }
 
 import 'reflect-metadata'
@@ -53,6 +53,9 @@ import type { Chunk, Message, Resource, Session } from './repo/read-content'
 import type { Embedding } from './repo/write-content'
 import type { OllamaModelDetails, OllamaModelEntry, OllamaModelStatus } from './connection/ollama'
 import type { EmbeddingModelV4, LanguageModelV4, ProviderV4 } from '@ai-sdk/provider';
+import type { Retriever, RetrieverRecipe } from '../retrieve/contracts';
+import { RetrieverFactory } from '../retrieve/retrievers';
+import { RETRIEVER_RECIPE_NAMES } from '../retrieve/recipes';
 
 interface Repo {
   ping(): Promise<boolean>
@@ -97,7 +100,7 @@ interface ChunkCandidate {
 }
 
 @singleton()
-class EmbeddingTarget {
+class EmbeddingHandle {
   readonly model: EmbeddingModelV4
   readonly modelId: string
   readonly dimensions: number
@@ -230,6 +233,24 @@ class PostgresRepo implements Repo {
 
   getMessagesBySession(SessionId: string) {
     return getMessagesBySession(this.db, SessionId)
+  }
+}
+
+@singleton()
+class RetrieverHandle {
+  readonly retriever: Retriever
+
+  constructor(
+    @inject(RetrieverFactory) Factory: RetrieverFactory,
+    @inject(PostgresRepo) Repo: Repo,
+    @inject(EmbeddingHandle) Embedding: EmbeddingHandle,
+    @inject(AppConfig) Config: AppConfig,
+  ) {
+    const recipe: RetrieverRecipe = {
+      ...RETRIEVER_RECIPE_NAMES,
+      deps: { repo: Repo, embedding: Embedding, config: Config },
+    }
+    this.retriever = Factory.assemble(recipe)
   }
 }
 

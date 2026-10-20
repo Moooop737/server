@@ -144,7 +144,7 @@ async function getChunksByResource(Db: Pool, ResourceId: string): Promise<Chunk[
   return rows.map(rowToChunk)
 }
 
-// 库里 embeddings 实际存着哪些维度。检索只能消费与 retrieverConfig.dimension 相等的那些行，
+// 库里 embeddings 实际存着哪些维度。检索只能消费与 config.embeddingDimensions 相等的那些行，
 // 存在别的维度 = 换过 embedding 模型而旧数据没重嵌，此时问答必须明确拒绝而不是报「未找到相关内容」。
 async function dimensionsInStore(Db: Pool): Promise<number[]> {
   const { rows } = await Db.query(`SELECT DISTINCT dimension FROM embeddings ORDER BY dimension`)

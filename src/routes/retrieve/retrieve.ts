@@ -1,11 +1,9 @@
 /**
  * 检索路由 —— POST /retrieve，body { query, limit? }，返回混合检索的融合结果。只检索、不生成（问答交后续 story）。
- * limit 缺省或不是正整数时忽略，回落 config.defaultLimit（融合后送进上下文的条数）。
+ * limit 缺省或不是正整数时忽略，回落 config.retrievalDefaultLimit（融合后送进上下文的条数）。
  * 与入库路由同一条装配规矩：本路由只校验 body + 装 Recipe，真正的检索交 Factory.assemble(recipe).search(query)；工厂是进程级单例，Recipe 每请求装一次。
- * getVectorDimensions 是**函数**不是数组：库中维度由 startServer 在 serve() 之前才填进 Deps，路由若在挂载时把它解构下来就永远拿到空数组，
- * 混维判定会静默失效（AC:186 那条就没人守）。
  * 失败映射：body 缺 query / 类型不对→400 E_BAD_BODY；空或纯空白提问→400 E_EMPTY_QUERY；
- * 库中混着别的维度→409 E_DIMENSION_MISMATCH；维度体检未跑成→409 E_DIMENSION_UNKNOWN（与库状态冲突，Lynx 2026-10-14 定）；
+ * 库中混着别的维度→409 E_DIMENSION_MISMATCH（维度是每请求现查的，见 retrieve/retrievers.ts）；
  * 装配名不识别(E_UNKNOWN_STAGE)→400；未预期（含 embedding 上游故障）→500 E_RETRIEVE。
  * 0 命中不是错误：200 + 空 hits + 两条 count，由调用方判「未找到」——空库／全无 ready 同理走 200 答案体。
  */
@@ -15,22 +13,36 @@ import { Hono } from 'hono'
 import { inject, injectable } from 'tsyringe'
 import { RetrieverError, RetrieverFactory } from '../../retrieve/retrievers'
 import { RETRIEVER_RECIPE_NAMES } from '../../retrieve/recipes'
+import { PostgresRepo, EmbeddingTarget } from '../../adapter/contract'
+import { AppConfig } from '../../config'
 
 export { RetrieveRoute }
-import type { Deps } from '../../bootstrap'
+import type { Repo } from '../../adapter/contract'
 import type { RetrieverRecipe } from '../../retrieve/contracts'
 
 @injectable()
 class RetrieveRoute {
   private readonly factory: RetrieverFactory
+  private readonly repo: Repo
+  private readonly embedding: EmbeddingTarget
+  private readonly config: AppConfig
 
-  constructor(@inject(RetrieverFactory) Factory: RetrieverFactory) {
+  constructor(
+    @inject(RetrieverFactory) Factory: RetrieverFactory,
+    @inject(PostgresRepo) Repo: Repo,
+    @inject(EmbeddingTarget) Embedding: EmbeddingTarget,
+    @inject(AppConfig) Config: AppConfig,
+  ) {
     this.factory = Factory
+    this.repo = Repo
+    this.embedding = Embedding
+    this.config = Config
   }
 
-  build(AppDeps: Deps): Hono {
+  build(): Hono {
     const app = new Hono()
-    const { repo, embedding, retrieverConfig: config } = AppDeps
+    const repo = this.repo
+    const { embedding, config } = this
     app.post('/', async (c) => {
       const body = (await c.req.json().catch(() => null)) as { query?: unknown; limit?: unknown } | null
       if (!body || typeof body.query !== 'string') {
@@ -40,7 +52,7 @@ class RetrieveRoute {
 
       const recipe: RetrieverRecipe = {
         ...RETRIEVER_RECIPE_NAMES,
-        deps: { repo, embedding, config, vectorDimensions: AppDeps.vectorDimensions },
+        deps: { repo, embedding, config },
       }
 
       try {
@@ -68,7 +80,7 @@ class RetrieveRoute {
           if (err.code === 'E_EMPTY_QUERY' || err.code === 'E_UNKNOWN_STAGE') {
             return c.json({ code: err.code, message: err.message }, 400)
           }
-          if (err.code === 'E_DIMENSION_MISMATCH' || err.code === 'E_DIMENSION_UNKNOWN') {
+          if (err.code === 'E_DIMENSION_MISMATCH') {
             return c.json({ code: err.code, message: err.message }, 409)
           }
         }

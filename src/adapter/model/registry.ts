@@ -1,6 +1,7 @@
 /**
  * model/registry —— 把 adapter/provider 那张在册表里的服务商兑换成 SDK 模型句柄（AD-4：全系统唯一兑换位）。
  * 只兑换、不发起调用：本文件交句柄，同格的 `embed-chunks.ts` 才是 `embedMany` 的调用封装（AD-4 两格分放）；`streamText` 留 `agent/`。
+ * 兑换完当场打一条 I_MODELS：登记制的规矩是「缺 Key 就整行静默缺席」，这行清单是让那件事唯一可见的地方，所以它住在这里而不是住在启动序列里。
  * 清单的键就是真 modelId（不自造 name），两个 Record 都以它为键；
  * env 的 CHAT_MODEL / EMBEDDING_MODEL 是「今天用的是哪一行」的选择位，选择发生在装配层，不在这里。
  * provider 不在册（缺 Key 没进表）⇒ 它的行一起静默缺席，和 provider 表同一条登记制规则。
@@ -10,13 +11,16 @@
  * 表里全是字面量，本文件不读 env。
  */
 
+import 'reflect-metadata'
+import { singleton } from 'tsyringe'
+import { providerRegistry } from '../provider/registry'
 import { type AlibabaChatModelId } from '@ai-sdk/alibaba'
 import { type DeepSeekProvider } from '@ai-sdk/deepseek'
 import { type OllamaProvider } from 'ai-sdk-ollama'
 import { type EmbeddingModelV4, type LanguageModelV4 } from '@ai-sdk/provider'
-import { type RegistedProviders, type RegistedModels } from '../contract'
+import { type RegistedModels } from '../contract'
 
-export { modelRegistry, type LanguageModelId, type EmbeddingModelId }
+export { ModelRegistry, type LanguageModelId, type EmbeddingModelId }
 
 type DeepSeekChatModelId = Parameters<DeepSeekProvider['languageModel']>[0]
 
@@ -39,20 +43,27 @@ const ModelList = [
     { kind: 'embeddingModel', provider: 'ollama-compat', modelId: 'qwenembed' },
 ] as const satisfies ModelEntry[]
 
-const modelRegistry = (Providers: RegistedProviders): RegistedModels => {
-    const languageModels: Partial<Record<LanguageModelId, LanguageModelV4>> = {}
-    const embeddingModels: Partial<Record<EmbeddingModelId, EmbeddingModelV4>> = {}
+@singleton()
+class ModelRegistry implements RegistedModels {
+    readonly languageModels: Partial<Record<LanguageModelId, LanguageModelV4>> = {}
+    readonly embeddingModels: Partial<Record<EmbeddingModelId, EmbeddingModelV4>> = {}
 
-    for (const entry of ModelList) {
-        const provider = Providers[entry.provider]
-        if (provider === undefined) continue
+    constructor() {
+        const Providers = providerRegistry()
+        for (const entry of ModelList) {
+            const provider = Providers[entry.provider]
+            if (provider === undefined) continue
 
-        if (entry.kind === 'embeddingModel') {
-            embeddingModels[entry.modelId] = provider.embeddingModel(entry.modelId)
-        } else {
-            languageModels[entry.modelId] = provider.languageModel(entry.modelId)
+            if (entry.kind === 'embeddingModel') {
+                this.embeddingModels[entry.modelId] = provider.embeddingModel(entry.modelId)
+            } else {
+                this.languageModels[entry.modelId] = provider.languageModel(entry.modelId)
+            }
         }
-    }
 
-    return { languageModels, embeddingModels }
+        console.log(JSON.stringify({
+            code: 'I_MODELS',
+            message: `对话句柄=${Object.keys(this.languageModels).join(',') || '无'} 嵌入句柄=${Object.keys(this.embeddingModels).join(',') || '无'}`,
+        }))
+    }
 }

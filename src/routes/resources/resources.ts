@@ -17,28 +17,36 @@ import { Hono } from 'hono'
 import { inject, injectable } from 'tsyringe'
 import { IngestError, IngestFactory } from '../../ingest/ingest'
 import { InflightRegistry } from '../../ingest/inflight'
+import { PostgresRepo, EmbeddingTarget } from '../../adapter/contract'
 
 export { ResourcesRoute }
 
-import type { Deps } from '../../bootstrap'
+import type { Repo } from '../../adapter/contract'
 import type { Recipe, KBData } from '../../ingest/contracts'
 
 @injectable()
 class ResourcesRoute {
   private readonly factory: IngestFactory
   private readonly inflight: InflightRegistry
+  private readonly repo: Repo
+  private readonly embedding: EmbeddingTarget
 
   constructor(
     @inject(IngestFactory) Factory: IngestFactory,
     @inject(InflightRegistry) Inflight: InflightRegistry,
+    @inject(PostgresRepo) Repo: Repo,
+    @inject(EmbeddingTarget) Embedding: EmbeddingTarget,
   ) {
     this.factory = Factory
     this.inflight = Inflight
+    this.repo = Repo
+    this.embedding = Embedding
   }
 
-  build(AppDeps: Deps): Hono {
+  build(): Hono {
     const app = new Hono()
-    const { repo, embedding } = AppDeps
+    const repo = this.repo
+    const embedding = this.embedding
 
     app.delete('/:id', async (c) => {
       const id = c.req.param('id')

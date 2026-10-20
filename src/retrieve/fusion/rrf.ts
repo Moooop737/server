@@ -14,8 +14,8 @@ class RrfFuser implements Fuser {
   private readonly defaultLimit: number
 
   constructor(Deps: RetrieverDeps) {
-    this.k = Deps.config.rrfK
-    this.defaultLimit = Deps.config.defaultLimit
+    this.k = Deps.config.retrievalRrfK
+    this.defaultLimit = Deps.config.retrievalDefaultLimit
   }
 
   fuse(

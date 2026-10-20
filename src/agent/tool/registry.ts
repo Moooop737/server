@@ -10,7 +10,7 @@ const RegistedTools = {
             prompt : z.string().describe('search input prompt to knowledge base'),
             topK : z.number().gt(3).lt(20).describe('output knowledge rows you need'),
         }),
-        execute : async ({prompt , topK }) => 
+        execute: async ({ prompt, topK }) => ({ prompt, topK }),
     })
 
 } as const satisfies ToolSet 

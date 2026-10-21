@@ -363,6 +363,56 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /sessions/{id}:
+    patch:
+      tags:
+        - session
+      operationId: updateSessionTitle
+      summary: 修改会话标题
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 会话 UUID
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - title
+              properties:
+                title:
+                  type: string
+      responses:
+        '200':
+          description: 修改后的会话
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400':
+          description: id 不是 UUID，或 title 不是非空字符串
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 会话不存在或已删除
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 修改会话标题失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /sessions/{id}/messages:
     get:
       tags:

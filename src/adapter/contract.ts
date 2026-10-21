@@ -39,7 +39,7 @@ import {
 import { writeChunksWithEmbeddings, deleteChunksByResource } from './repo/write-content'
 import {
   getResource, listResources, countResourcesByStatus, findActiveBySource, getChunksByResource, dimensionsInStore,
-  findResourcesByStatus, createSession, getSession, listSessions, createMessage, getMessagesBySession,
+  findResourcesByStatus, createSession, getSession, listSessions, updateSessionTitle, createMessage, getMessagesBySession,
 } from './repo/read-content'
 import { vectorCandidates } from './repo/search-vector'
 import { lexicalCandidates } from './repo/search-lexical'
@@ -87,6 +87,7 @@ interface Repo {
   createSession(Title?: string): Promise<Session>
   getSession(Id: string): Promise<Session | null>
   listSessions(): Promise<Session[]>
+  updateSessionTitle(SessionId: string, Title: string): Promise<Session | null>
   createMessage(Data: Pick<Message, 'session_id' | 'role' | 'content' | 'parts'>): Promise<Message>
   getMessagesBySession(SessionId: string): Promise<Message[]>
 }
@@ -230,6 +231,10 @@ class PostgresRepo implements Repo {
 
   listSessions() {
     return listSessions(this.db)
+  }
+
+  updateSessionTitle(SessionId: string, Title: string) {
+    return updateSessionTitle(this.db, SessionId, Title)
   }
 
   createMessage(Data: Pick<Message, 'session_id' | 'role' | 'content' | 'parts'>) {

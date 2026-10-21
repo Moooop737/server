@@ -9,7 +9,7 @@
 export {
   rowToResource, rowToChunk, rowToSession, rowToMessage,
   getResource, listResources, countResourcesByStatus, findActiveBySource, getChunksByResource, dimensionsInStore,
-  findResourcesByStatus, createSession, getSession, listSessions, createMessage, getMessagesBySession,
+  findResourcesByStatus, createSession, getSession, listSessions, updateSessionTitle, createMessage, getMessagesBySession,
 }
 
 export type { timestamp, Resource, Chunk, Session, Message }
@@ -196,6 +196,16 @@ async function listSessions(Db: Pool): Promise<Session[]> {
      ORDER BY created_at DESC, session_id DESC`,
   )
   return rows.map(rowToSession)
+}
+
+async function updateSessionTitle(Db: Pool, SessionId: string, Title: string): Promise<Session | null> {
+  const { rows } = await Db.query(
+    `UPDATE sessions SET title = $2, updated_at = now()
+     WHERE session_id = $1 AND deleted_at IS NULL
+     RETURNING session_id, title, created_at, updated_at, deleted_at`,
+    [SessionId, Title],
+  )
+  return rows[0] ? rowToSession(rows[0]) : null
 }
 
 async function createMessage(

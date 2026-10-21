@@ -21,7 +21,7 @@ function createHealthRoute(Probes: HealthCheck[], CacheTtlMs = 5000): Hono {
   const app = new Hono()
   let cache: CachedResponse | null = null
 
-  app.get('/health', async (c) => {
+  app.get('/', async (c) => {
     const now = Date.now()
     if (cache && now - cache.at < CacheTtlMs) {
       return c.json(cache.body, cache.code as 200 | 503)

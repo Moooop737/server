@@ -1,0 +1,772 @@
+openapi: 3.1.0
+info:
+  version: 0.1.0
+  title: Knowledge Copilot API
+  description: Knowledge Copilot 的接口文档；会话、资源、检索、对话与健康检查。
+servers:
+  - url: http://127.0.0.1:3000
+tags:
+  - name: session
+    description: 会话历史API
+  - name: chat
+    description: 对话API
+  - name: health
+    description: 服务探针API
+  - name: resources
+    description: 资源API
+  - name: retrieve
+    description: 召回API
+paths:
+  /health:
+    get:
+      tags:
+        - health
+      operationId: getHealth
+      summary: 服务健康检查
+      responses:
+        '200':
+          description: 全部探针通过
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: 至少一个探针失败（degraded）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /resources:
+    get:
+      tags:
+        - resources
+      operationId: listResources
+      summary: 资源列表
+      responses:
+        '200':
+          description: 未软删的资源
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - resources
+                properties:
+                  resources:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Resource'
+        '500':
+          description: 读取资源列表失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+        - resources
+      operationId: ingestResource
+      summary: 入库 URL 或粘贴文本
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+      responses:
+        '201':
+          description: 入库成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestSuccess'
+        '400':
+          description: body、url、content_type 或策略名不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 同 URL 已有 ready/processing 资源
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: 建行后入库失败，resource 留痕为 failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestFailed'
+        '500':
+          description: 入库失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /resources/{id}:
+    delete:
+      tags:
+        - resources
+      operationId: deleteResource
+      summary: 软删资源
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 资源 UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: 已软删
+        '400':
+          description: id 不是 UUID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或已删除
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 删除失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /resources/{id}/chunks:
+    get:
+      tags:
+        - resources
+      operationId: listResourceChunks
+      summary: 读取资源分块
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 资源 UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 该资源的分块
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - chunks
+                properties:
+                  chunks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Chunk'
+        '400':
+          description: id 不是 UUID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或已删除
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 读取分块失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /resources/{id}/abort:
+    post:
+      tags:
+        - resources
+      operationId: abortResourceIngest
+      summary: 取消处理中的入库
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 资源 UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '202':
+          description: 取消已按下，异步生效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AbortAccepted'
+        '400':
+          description: id 不是 UUID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或已删除
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 资源不是 processing，或不在本进程的入库登记里
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AbortConflict'
+        '500':
+          description: 取消失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /retrieve:
+    post:
+      tags:
+        - retrieve
+      operationId: retrieve
+      summary: 混合检索
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetrieveRequest'
+      responses:
+        '200':
+          description: 融合结果；0 命中也是 200
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetrieveResponse'
+        '400':
+          description: body.query 不合法或为空白
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 库中存在与当前检索维度不符的向量
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 检索失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /chat:
+    post:
+      tags:
+        - chat
+      operationId: chat
+      summary: 流式问答（AI SDK UI Message Stream）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  type: string
+      responses:
+        '200':
+          description: SSE 流；Scalar 的 Try it 可能只显示原始流，建议用前端/curl
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          description: body.query 不合法或为空白
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 问答失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /sessions:
+    get:
+      tags:
+        - session
+      operationId: listSessions
+      summary: 会话列表
+      responses:
+        '200':
+          description: 未软删的会话，按创建时间倒序
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - sessions
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Session'
+        '500':
+          description: 读取会话列表失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+        - session
+      operationId: createSession
+      summary: 创建会话
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  description: 可选标题；空字符串会落成默认空标题
+      responses:
+        '201':
+          description: 会话已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400':
+          description: body 不是 JSON 对象，或 title 不是字符串
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 创建会话失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /sessions/{id}/messages:
+    get:
+      tags:
+        - session
+      operationId: listSessionMessages
+      summary: 读取会话消息
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 会话 UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 按 sequence 正序返回的消息
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - session_id
+                  - messages
+                properties:
+                  session_id:
+                    type: string
+                    format: uuid
+                  messages:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Message'
+        '400':
+          description: id 不是 UUID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 会话不存在或已删除
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 读取会话失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  schemas:
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - checks
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+            - degraded
+        checks:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ProbeResult'
+    ProbeResult:
+      type: object
+      required:
+        - ok
+      properties:
+        ok:
+          type: boolean
+        detail:
+          description: 探针失败时的诊断信息
+    Resource:
+      type: object
+      required:
+        - id
+        - title
+        - source
+        - data_uri
+        - content_type
+        - status
+        - error_reason
+        - created_at
+        - updated_at
+        - deleted_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        source:
+          type:
+            - string
+            - 'null'
+        data_uri:
+          type: string
+        content_type:
+          type: string
+          enum:
+            - url
+            - markdown
+            - plaintext
+        status:
+          type: string
+          enum:
+            - processing
+            - ready
+            - failed
+        error_reason:
+          type:
+            - string
+            - 'null'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        deleted_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+    Chunk:
+      type: object
+      required:
+        - id
+        - resource_id
+        - resource_uri
+        - chunk_index
+        - content
+        - start_offset
+        - end_offset
+        - created_at
+        - updated_at
+        - deleted_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        resource_id:
+          type: string
+          format: uuid
+        resource_uri:
+          type: string
+        chunk_index:
+          type: integer
+        content:
+          type: string
+        start_offset:
+          type:
+            - integer
+            - 'null'
+        end_offset:
+          type:
+            - integer
+            - 'null'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        deleted_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+    IngestRequest:
+      type: object
+      description: url 与 content 必须恰好给一个；给 content 时 content_type 必填
+      properties:
+        url:
+          type: string
+          format: uri
+        content:
+          type: string
+        content_type:
+          type: string
+          enum:
+            - markdown
+            - plaintext
+        title:
+          type: string
+        chunker:
+          type: string
+          default: legacy
+    IngestSuccess:
+      type: object
+      required:
+        - resource
+        - chunk_count
+      properties:
+        resource:
+          $ref: '#/components/schemas/Resource'
+        chunk_count:
+          type: integer
+        warning:
+          type: string
+    IngestFailed:
+      type: object
+      required:
+        - code
+        - message
+        - resource
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        resource:
+          $ref: '#/components/schemas/Resource'
+    AbortAccepted:
+      type: object
+      required:
+        - message
+        - resource_id
+      properties:
+        message:
+          type: string
+        resource_id:
+          type: string
+          format: uuid
+    AbortConflict:
+      type: object
+      required:
+        - code
+        - message
+        - resource_id
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        resource_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - processing
+            - ready
+            - failed
+            - gone
+    RetrieveRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+        limit:
+          type: integer
+          minimum: 1
+    RetrieveHit:
+      type: object
+      required:
+        - chunkId
+        - resourceId
+        - chunkIndex
+        - startOffset
+        - endOffset
+        - docTitle
+        - source
+        - dataUri
+        - score
+        - similarity
+        - lexicalScore
+        - content
+      properties:
+        chunkId:
+          type: string
+          format: uuid
+        resourceId:
+          type: string
+          format: uuid
+        chunkIndex:
+          type: integer
+        startOffset:
+          type:
+            - integer
+            - 'null'
+        endOffset:
+          type:
+            - integer
+            - 'null'
+        docTitle:
+          type: string
+        source:
+          type:
+            - string
+            - 'null'
+        dataUri:
+          type: string
+        score:
+          type: number
+        similarity:
+          type:
+            - number
+            - 'null'
+        lexicalScore:
+          type:
+            - number
+            - 'null'
+        content:
+          type: string
+    RetrieveResponse:
+      type: object
+      required:
+        - hits
+        - vectorCount
+        - lexicalCount
+      properties:
+        hits:
+          type: array
+          items:
+            $ref: '#/components/schemas/RetrieveHit'
+        vectorCount:
+          type: integer
+        lexicalCount:
+          type: integer
+    Session:
+      type: object
+      required:
+        - session_id
+        - title
+        - created_at
+        - updated_at
+        - deleted_at
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        deleted_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+    Message:
+      type: object
+      required:
+        - message_id
+        - session_id
+        - role
+        - content
+        - parts
+        - sequence
+        - created_at
+        - updated_at
+        - deleted_at
+      properties:
+        message_id:
+          type: string
+          format: uuid
+        session_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum:
+            - user
+            - assistant
+        content:
+          type: string
+        parts:
+          type: array
+          description: AI SDK UIMessage.parts；第一版先用宽松对象
+          items:
+            type: object
+            additionalProperties: true
+        sequence:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        deleted_at:
+          type:
+            - string
+            - 'null'
+          format: date-time

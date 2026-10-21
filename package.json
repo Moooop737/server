@@ -19,6 +19,7 @@
     "@ai-sdk/openai-compatible": "^3.0.68",
     "@hono/node-server": "^2.1.4",
     "@mozilla/readability": "^0.6.0",
+    "@scalar/hono-api-reference": "^0.12.13",
     "ai": "^7.0.141",
     "ai-sdk-ollama": "^4.5.0",
     "hono": "^4.13.13",
@@ -28,6 +29,7 @@
     "tsyringe": "^4.10.0",
     "turndown": "^7.2.4",
     "turndown-plugin-gfm": "^1.0.2",
+    "yaml": "^2.9.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {

@@ -2,7 +2,7 @@
  * 基础层唯一的对外门 —— 别盒只准从这里 import（AD-6：adapter/ 用单一 contract.ts 门，不逐盒建）。
  * 门只交服务、不交连接：new PostgresRepo(Config) 在内部造池并持有，Pool 与任何 SQL 文本都出不了 repo/（AD-3），
  * 所以这里不出现 `pg`，也没有「借一条连接」的原语可导出。
- * Repo 的方法名逐个沿用现网 Repository 的 16 个（含五个 NotImplemented 占位，语义未改），另加五个：
+ * Repo 的方法名逐个沿用现网 Repository 的 16 个（现只剩 findResourcesByStatus 一个清理侧占位），另加五个：
  * ping / dimensionsInStore / markInterruptedAsFailed / vectorCandidates / lexicalCandidates。
  * ChunkCandidate 就是检索命中去掉名次分那一位 —— score 由融合侧产出，不该由基础层造，
  * 所以两条候选查询交出 ChunkCandidate，retrieve/search/ 的两个适配器补上 score: 0 再交给 Retriever。
@@ -39,7 +39,7 @@ import {
 import { writeChunksWithEmbeddings, deleteChunksByResource } from './repo/write-content'
 import {
   getResource, listResources, countResourcesByStatus, findActiveBySource, getChunksByResource, dimensionsInStore,
-  findResourcesByStatus, createSession, getSession, createMessage, getMessagesBySession,
+  findResourcesByStatus, createSession, getSession, listSessions, createMessage, getMessagesBySession,
 } from './repo/read-content'
 import { vectorCandidates } from './repo/search-vector'
 import { lexicalCandidates } from './repo/search-lexical'
@@ -86,7 +86,8 @@ interface Repo {
 
   createSession(Title?: string): Promise<Session>
   getSession(Id: string): Promise<Session | null>
-  createMessage(Data: Pick<Message, 'session_id' | 'role' | 'content' | 'sources'>): Promise<Message>
+  listSessions(): Promise<Session[]>
+  createMessage(Data: Pick<Message, 'session_id' | 'role' | 'content' | 'parts'>): Promise<Message>
   getMessagesBySession(SessionId: string): Promise<Message[]>
 }
 
@@ -227,7 +228,11 @@ class PostgresRepo implements Repo {
     return getSession(this.db, Id)
   }
 
-  createMessage(Data: Pick<Message, 'session_id' | 'role' | 'content' | 'sources'>) {
+  listSessions() {
+    return listSessions(this.db)
+  }
+
+  createMessage(Data: Pick<Message, 'session_id' | 'role' | 'content' | 'parts'>) {
     return createMessage(this.db, Data)
   }
 

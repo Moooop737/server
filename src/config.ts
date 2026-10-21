@@ -11,7 +11,7 @@ import 'reflect-metadata'
 import { singleton } from 'tsyringe'
 import type { Repo } from './adapter/contract';
 
-export { AppConfig, getEnv ,cleanUpOnBoot}
+export { AppConfig, getEnv, cleanUpOnBoot }
 
 @singleton()
 class AppConfig {
@@ -29,49 +29,36 @@ class AppConfig {
   readonly retrievalDefaultLimit: number    // 融合后送进上下文的条数
 
   constructor() {
-    const get = (name: string): string | undefined => {
-      const v = process.env[name]?.trim()
-      return v ? v : undefined
-    }
-
     const missing: string[] = []
-    const databaseUrl = get('DATABASE_URL')
-    const ollamaBaseUrl = get('OLLAMA_BASE_URL')
-    const embeddingModel = get('EMBEDDING_MODEL')
+    const databaseUrl = getEnv('DATABASE_URL')
+    const ollamaBaseUrl = getEnv('OLLAMA_BASE_URL')
+    const embeddingModel = getEnv('EMBEDDING_MODEL')
+    const chatModel = getEnv('CHAT_MODEL')!
     if (!databaseUrl) missing.push('DATABASE_URL')
     if (!ollamaBaseUrl) missing.push('OLLAMA_BASE_URL')
     if (!embeddingModel) missing.push('EMBEDDING_MODEL')
-
-    const chatModel = get('CHAT_MODEL')!
     if (!chatModel) missing.push('CHAT_MODEL')
-
     if (missing.length > 0) {
       fail('E_CONFIG_MISSING', `必需的环境变量缺失: ${missing.join(', ')}`)
     }
-
-    const embeddingDimensions = numOrThrow(get('EMBEDDING_DIMENSIONS'), 'EMBEDDING_DIMENSIONS', 1024, 1, 16000)
-    if (embeddingDimensions !== 1024) {
+    const embeddingDimensions = numOrThrow(getEnv('EMBEDDING_DIMENSIONS'), 'EMBEDDING_DIMENSIONS', 1024, 1, 16000)
+    if (!(embeddingDimensions in [2048, 1024, 512])) {
       console.warn(JSON.stringify({ code: 'W_EMBEDDING_DIM', message: `EMBEDDING_DIMENSIONS=${embeddingDimensions} 无对应 HNSW 索引，检索将退化顺序扫描` }))
     }
 
-    this.port = numOrThrow(get('PORT'), 'PORT', 3000, 1, 65535)
+    this.port = numOrThrow(getEnv('PORT'), 'PORT', 3000, 1, 65535)
     this.databaseUrl = databaseUrl!
     this.ollamaBaseUrl = ollamaBaseUrl!
     this.embeddingModel = embeddingModel!
     this.embeddingDimensions = embeddingDimensions
     this.chatModel = chatModel
 
-    this.retrievalVectorTopK = numOrThrow(get('RETRIEVAL_VECTOR_TOPK'), 'RETRIEVAL_VECTOR_TOPK', 10, 1, 100)
-    this.retrievalLexicalTopK = numOrThrow(get('RETRIEVAL_LEXICAL_TOPK'), 'RETRIEVAL_LEXICAL_TOPK', 10, 1, 100)
-    this.retrievalMinSimilarity = floatOrThrow(get('RETRIEVAL_MIN_SIMILARITY'), 'RETRIEVAL_MIN_SIMILARITY', 0.42, 0, 1)
-    this.retrievalRrfK = numOrThrow(get('RETRIEVAL_RRF_K'), 'RETRIEVAL_RRF_K', 60, 1, 1000)
-    this.retrievalDefaultLimit = numOrThrow(get('RETRIEVAL_DEFAULT_LIMIT'), 'RETRIEVAL_DEFAULT_LIMIT', 6, 1, 100)
+    this.retrievalVectorTopK = numOrThrow(getEnv('RETRIEVAL_VECTOR_TOPK'), 'RETRIEVAL_VECTOR_TOPK', 10, 1, 100)
+    this.retrievalLexicalTopK = numOrThrow(getEnv('RETRIEVAL_LEXICAL_TOPK'), 'RETRIEVAL_LEXICAL_TOPK', 10, 1, 100)
+    this.retrievalMinSimilarity = floatOrThrow(getEnv('RETRIEVAL_MIN_SIMILARITY'), 'RETRIEVAL_MIN_SIMILARITY', 0.42, 0, 1)
+    this.retrievalRrfK = numOrThrow(getEnv('RETRIEVAL_RRF_K'), 'RETRIEVAL_RRF_K', 60, 1, 1000)
+    this.retrievalDefaultLimit = numOrThrow(getEnv('RETRIEVAL_DEFAULT_LIMIT'), 'RETRIEVAL_DEFAULT_LIMIT', 6, 1, 100)
   }
-}
-
-function fail(code: string, message: string): never {
-  console.error(JSON.stringify({ code, message }))
-  process.exit(1)
 }
 
 async function cleanUpOnBoot(repo: Repo, config: AppConfig) {
@@ -95,7 +82,6 @@ async function cleanUpOnBoot(repo: Repo, config: AppConfig) {
   }
 }
 
-/** 小数型 env 的解析 + 范围校验；RETRIEVAL_MIN_SIMILARITY 这类阈值不是整数，走这条而非 numOrThrow */
 function floatOrThrow(
   Raw: string | undefined,
   Name: string,
@@ -124,6 +110,11 @@ function numOrThrow(
     fail('E_CONFIG_INVALID', `${Name} 需为 ${Min}-${Max} 的整数，收到: ${Raw}`)
   }
   return v
+}
+
+function fail(code: string, message: string): never {
+  console.error(JSON.stringify({ code, message }))
+  process.exit(1)
 }
 
 const getEnv = (name: string): string | undefined => {

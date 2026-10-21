@@ -6,10 +6,10 @@
 
 export { buildAgentTools }
 
-import { buildRetriveTool } from './retrive'
+import { buildRetrieveTool } from './tools/retrieve'
 
 import type { Retriever } from '../../retrieve/contracts'
 
 function buildAgentTools(Retriever: Retriever) {
-  return { retrive: buildRetriveTool(Retriever) }
+  return { retrieve: buildRetrieveTool(Retriever) }
 }

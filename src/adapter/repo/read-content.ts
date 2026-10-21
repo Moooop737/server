@@ -2,19 +2,20 @@
  * 读侧 —— resources / chunks / embeddings 的查询与行投影。
  * 行投影是本层私有的：pg 读回的 timestamptz 是 Date 实例、halfvec 是字符串，两者都不许越过本层（脊「数据与格式」条）。
  * 每个读方法自带未软删谓词，不由调用方拼（AD-3）；例外是 dimensionsInStore()，它数的是 embeddings 的维度事实，与某行是否软删无关。
- * 末尾五个 NotImplemented 是随 Repository 端口一起搬进来的占位：findResourcesByStatus 属清理侧，session/message 四条随 Story 2.2 落库时迁出本层。
- * 实体形状住本层（timestamp / Resource / Chunk / Session / Message / CitationSource）：谁产出行投影谁定义；Embedding 只有写侧，就近住 write-content.ts。
+ * session/message 四条已按 Story 2.5 落回本层；findResourcesByStatus 仍是清理侧占位。
+ * 实体形状住本层（timestamp / Resource / Chunk / Session / Message）：谁产出行投影谁定义；Embedding 只有写侧，就近住 write-content.ts。
  */
 
 export {
-  rowToResource, rowToChunk,
+  rowToResource, rowToChunk, rowToSession, rowToMessage,
   getResource, listResources, countResourcesByStatus, findActiveBySource, getChunksByResource, dimensionsInStore,
-  findResourcesByStatus, createSession, getSession, createMessage, getMessagesBySession,
+  findResourcesByStatus, createSession, getSession, listSessions, createMessage, getMessagesBySession,
 }
 
-export type { timestamp, Resource, Chunk, Session, Message, CitationSource }
+export type { timestamp, Resource, Chunk, Session, Message }
 
 import type { Pool } from 'pg'
+import type { UIMessage } from 'ai'
 
 interface timestamp {
   created_at: string
@@ -43,26 +44,17 @@ interface Chunk extends timestamp {
 }
 
 interface Session extends timestamp {
-  id: string
+  session_id: string
   title: string
-  user_id: string
 }
 
 interface Message extends timestamp {
-  id: string
+  message_id: string
   session_id: string
-  role: 'user' | 'assistant' | 'tool'
+  role: 'user' | 'assistant'
   content: string
-  sources: CitationSource[] | null
-}
-
-interface CitationSource {
-  marker: string
-  chunk_id: string
-  doc_title: string
-  data_uri: string
-  source: string | null
-  snippet: string
+  parts: UIMessage['parts']
+  sequence: number
 }
 
 function rowToResource(r: any): Resource {
@@ -89,6 +81,30 @@ function rowToChunk(r: any): Chunk {
     content: r.content,
     start_offset: r.start_offset,
     end_offset: r.end_offset,
+    created_at: iso(r.created_at)!,
+    updated_at: iso(r.updated_at)!,
+    deleted_at: iso(r.deleted_at),
+  }
+}
+
+function rowToSession(r: any): Session {
+  return {
+    session_id: r.session_id,
+    title: r.title,
+    created_at: iso(r.created_at)!,
+    updated_at: iso(r.updated_at)!,
+    deleted_at: iso(r.deleted_at),
+  }
+}
+
+function rowToMessage(r: any): Message {
+  return {
+    message_id: r.message_id,
+    session_id: r.session_id,
+    role: r.role,
+    content: r.content,
+    parts: typeof r.parts === 'string' ? JSON.parse(r.parts) : (r.parts ?? []),
+    sequence: Number(r.sequence),
     created_at: iso(r.created_at)!,
     updated_at: iso(r.updated_at)!,
     deleted_at: iso(r.deleted_at),
@@ -155,21 +171,53 @@ async function findResourcesByStatus(_Db: Pool, _Status: Resource['status']): Pr
   throw new Error('NotImplemented: findResourcesByStatus (Story 1.4/cleanup)')
 }
 
-async function createSession(_Db: Pool, _Title?: string): Promise<Session> {
-  throw new Error('NotImplemented: createSession (Story 2.1)')
+async function createSession(Db: Pool, Title?: string): Promise<Session> {
+  const { rows } = await Db.query(
+    `INSERT INTO sessions (title) VALUES ($1)
+     RETURNING session_id, title, created_at, updated_at, deleted_at`,
+    [Title ?? ''],
+  )
+  return rowToSession(rows[0])
 }
 
-async function getSession(_Db: Pool, _Id: string): Promise<Session | null> {
-  throw new Error('NotImplemented: getSession (Story 2.1)')
+async function getSession(Db: Pool, Id: string): Promise<Session | null> {
+  const { rows } = await Db.query(
+    `SELECT session_id, title, created_at, updated_at, deleted_at
+     FROM sessions WHERE session_id = $1 AND deleted_at IS NULL`,
+    [Id],
+  )
+  return rows[0] ? rowToSession(rows[0]) : null
+}
+
+async function listSessions(Db: Pool): Promise<Session[]> {
+  const { rows } = await Db.query(
+    `SELECT session_id, title, created_at, updated_at, deleted_at
+     FROM sessions WHERE deleted_at IS NULL
+     ORDER BY created_at DESC, session_id DESC`,
+  )
+  return rows.map(rowToSession)
 }
 
 async function createMessage(
-  _Db: Pool,
-  _Data: Pick<Message, 'session_id' | 'role' | 'content' | 'sources'>,
+  Db: Pool,
+  Data: Pick<Message, 'session_id' | 'role' | 'content' | 'parts'>,
 ): Promise<Message> {
-  throw new Error('NotImplemented: createMessage (Story 2.1)')
+  const { rows } = await Db.query(
+    `INSERT INTO messages (session_id, role, content, parts)
+     VALUES ($1, $2, $3, $4::jsonb)
+     RETURNING message_id, session_id, role, content, parts, sequence, created_at, updated_at, deleted_at`,
+    [Data.session_id, Data.role, Data.content, JSON.stringify(Data.parts)],
+  )
+  return rowToMessage(rows[0])
 }
 
-async function getMessagesBySession(_Db: Pool, _SessionId: string): Promise<Message[]> {
-  throw new Error('NotImplemented: getMessagesBySession (Story 2.1)')
+async function getMessagesBySession(Db: Pool, SessionId: string): Promise<Message[]> {
+  const { rows } = await Db.query(
+    `SELECT message_id, session_id, role, content, parts, sequence, created_at, updated_at, deleted_at
+     FROM messages
+     WHERE session_id = $1 AND deleted_at IS NULL
+     ORDER BY sequence ASC`,
+    [SessionId],
+  )
+  return rows.map(rowToMessage)
 }

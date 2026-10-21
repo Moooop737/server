@@ -1,5 +1,5 @@
 /**
- * 资源路由 —— GET / 列表、GET /:id/chunks 分块、POST / 入库（url 与 content 二选一）、
+ * 资源路由 —— GET / 列表、GET /:id 单资源（判删除状态）、GET /:id/chunks 分块、POST / 入库（url 与 content 二选一）、
  * DELETE /:id 软删（处理中的先按下取消再删）、POST /:id/abort 只取消不删。
  * POST 只负责校验 body + 装配 Recipe/KBData，真正入库交 Factory.assemble(recipe).run(data)。
  * 取消开关由管线自己持有并按 resourceId 登记在 Deps.inflight，本路由只是按按钮的人之一；
@@ -7,9 +7,9 @@
  * fetcher/parser 由来源在此定死（url→http/html，content→passthrough/text）；chunker 可由 body 覆盖，缺省 'legacy'（注册表里的策略名）。
  * embed 不再走 body：它是装配层选定的 Deps.embedding（一行 model 句柄 + 标识 + 截维），随 Recipe 原样带进管线，写进 embeddings.model 的就是它的 modelId。
  * 失败映射：查重命中→409；建行后 failed→422（带 resource，failure.code 可为 E_CANCELLED / E_TIMEOUT / E_RESOURCE_GONE / E_INGEST_FAILED）；
- * 装配名不识别(E_UNKNOWN_STAGE)→400；id 非 UUID→400 E_BAD_ID；资源不存在或已软删→404 E_NOT_FOUND；
+ * 装配名不识别(E_UNKNOWN_STAGE)→400；id 非 UUID→400 E_BAD_ID；资源不存在或已软删→404 E_NOT_FOUND；读取单资源失败→500 E_READ；
  * 无可取消任务→409 E_NOT_PROCESSING（状态不是 processing）/ 409 E_NOT_INFLIGHT（是 processing 但不在本进程登记里，重启遗留）；未预期→500。
- * 成功：201 入库（可能带 warning，只是提示、不影响 ready 状态）；202 abort 已按下（异步生效）；204 软删；200 列表与分块。
+ * 成功：201 入库（可能带 warning，只是提示、不影响 ready 状态）；202 abort 已按下（异步生效）；204 软删；200 列表、单资源与分块。
  */
 
 import 'reflect-metadata'
@@ -97,6 +97,22 @@ class ResourcesRoute {
       } catch (err) {
         console.error(JSON.stringify({ code: 'E_LIST', message: String(err) }))
         return c.json({ code: 'E_LIST', message: '读取资源列表失败' }, 500)
+      }
+    })
+
+    app.get('/:id', async (c) => {
+      const id = c.req.param('id')
+      if (!uuidOk(id)) {
+        return c.json({ code: 'E_BAD_ID', message: 'id 需为 UUID' }, 400)
+      }
+      try {
+        const resource = await repo.getResource(id)
+        return resource
+          ? c.json({ resource })
+          : c.json({ code: 'E_NOT_FOUND', message: '资源不存在或已删除' }, 404)
+      } catch (err) {
+        console.error(JSON.stringify({ code: 'E_READ', message: String(err) }))
+        return c.json({ code: 'E_READ', message: '读取资源失败' }, 500)
       }
     })
 

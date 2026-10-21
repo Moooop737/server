@@ -105,6 +105,49 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
   /resources/{id}:
+    get:
+      tags:
+        - resources
+      operationId: getResource
+      summary: 读取单个资源（判断是否已删除）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 资源 UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 未软删的资源
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - resource
+                properties:
+                  resource:
+                    $ref: '#/components/schemas/Resource'
+        '400':
+          description: id 不是 UUID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 资源不存在或已删除
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 读取资源失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
     delete:
       tags:
         - resources
@@ -281,9 +324,14 @@ paths:
               type: object
               required:
                 - query
+                - sessionId
               properties:
                 query:
                   type: string
+                sessionId:
+                  type: string
+                  format: uuid
+                  description: POST /sessions 生成的会话 UUID
       responses:
         '200':
           description: SSE 流；Scalar 的 Try it 可能只显示原始流，建议用前端/curl
@@ -292,7 +340,13 @@ paths:
               schema:
                 type: string
         '400':
-          description: body.query 不合法或为空白
+          description: body.query 不合法或为空白；sessionId 不是 UUID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 会话不存在或已删除
           content:
             application/json:
               schema:

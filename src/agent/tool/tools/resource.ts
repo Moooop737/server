@@ -1,5 +1,4 @@
-import type { Tool } from "ai";
+export { buildResourceTool }
 
-function buildRescourceTool() : Tool<RescourceToolInput, ResourceToolOutput> {
-
-}
+/** 资源工具占位：尚未实现、未接线，等后续 story。 */
+function buildResourceTool(): void {}

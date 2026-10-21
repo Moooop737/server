@@ -28,7 +28,7 @@
  */
 
 export {RetrieverHandle, PostgresRepo, EmbeddingHandle, ChatHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, ModelRegistry, embedChunks }
-export type { Repo, ChunkCandidate, Resource, OllamaModelDetails, OllamaModelEntry, OllamaModelStatus, ProviderEntryName, LanguageModelId, EmbeddingModelId, RegistedProviders, RegistedModels }
+export type { Repo, ChunkCandidate, Resource, Message, OllamaModelDetails, OllamaModelEntry, OllamaModelStatus, ProviderEntryName, LanguageModelId, EmbeddingModelId, RegistedProviders, RegistedModels }
 
 import 'reflect-metadata'
 import { inject, singleton } from 'tsyringe'

@@ -42,7 +42,7 @@ class AppConfig {
       fail('E_CONFIG_MISSING', `必需的环境变量缺失: ${missing.join(', ')}`)
     }
     const embeddingDimensions = numOrThrow(getEnv('EMBEDDING_DIMENSIONS'), 'EMBEDDING_DIMENSIONS', 1024, 1, 16000)
-    if (!(embeddingDimensions in [2048, 1024, 512])) {
+    if (![2048, 1024, 512].includes(embeddingDimensions)) {
       console.warn(JSON.stringify({ code: 'W_EMBEDDING_DIM', message: `EMBEDDING_DIMENSIONS=${embeddingDimensions} 无对应 HNSW 索引，检索将退化顺序扫描` }))
     }
 

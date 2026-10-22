@@ -18,6 +18,7 @@ import { inject, injectable } from 'tsyringe'
 import { IngestError, IngestFactory } from '../../ingest/ingest'
 import { InflightRegistry } from '../../ingest/inflight'
 import { PostgresRepo, EmbeddingHandle } from '../../adapter/contract'
+import { logError } from '../../trace/systemtrace/log'
 
 export { ResourcesRoute }
 
@@ -62,7 +63,7 @@ class ResourcesRoute {
         }
         return (await repo.softDeleteResource(id)) ? c.body(null, 204) : c.json({ code: 'E_NOT_FOUND', message: '资源不存在或已删除' }, 404)
       } catch (err) {
-        console.error(JSON.stringify({ code: 'E_DELETE', message: String(err) }))
+        logError('E_DELETE', String(err))
         return c.json({ code: 'E_DELETE', message: '删除失败' }, 500)
       }
     })
@@ -85,7 +86,7 @@ class ResourcesRoute {
         }
         return c.json({ message: '取消已按下，任务不会转为已就绪，将在当前长操作结束后转 failed', resource_id: id }, 202)
       } catch (err) {
-        console.error(JSON.stringify({ code: 'E_ABORT', message: String(err) }))
+        logError('E_ABORT', String(err))
         return c.json({ code: 'E_ABORT', message: '取消失败' }, 500)
       }
     })
@@ -95,7 +96,7 @@ class ResourcesRoute {
         const resources = await repo.listResources()
         return c.json({ resources })
       } catch (err) {
-        console.error(JSON.stringify({ code: 'E_LIST', message: String(err) }))
+        logError('E_LIST', String(err))
         return c.json({ code: 'E_LIST', message: '读取资源列表失败' }, 500)
       }
     })
@@ -111,7 +112,7 @@ class ResourcesRoute {
           ? c.json({ resource })
           : c.json({ code: 'E_NOT_FOUND', message: '资源不存在或已删除' }, 404)
       } catch (err) {
-        console.error(JSON.stringify({ code: 'E_READ', message: String(err) }))
+        logError('E_READ', String(err))
         return c.json({ code: 'E_READ', message: '读取资源失败' }, 500)
       }
     })
@@ -128,7 +129,7 @@ class ResourcesRoute {
         const chunks = await repo.getChunksByResource(id)
         return c.json({ chunks })
       } catch (err) {
-        console.error(JSON.stringify({ code: 'E_CHUNKS', message: String(err) }))
+        logError('E_CHUNKS', String(err))
         return c.json({ code: 'E_CHUNKS', message: '读取分块失败' }, 500)
       }
     })
@@ -195,7 +196,7 @@ class ResourcesRoute {
         return c.json({ resource: result.resource, chunk_count: result.chunkCount, ...(result.warning ? { warning: result.warning } : {}) }, 201)
       } catch (err) {
         if (err instanceof IngestError) return c.json({ code: err.code, message: err.message }, 400)
-        console.error(JSON.stringify({ code: 'E_INGEST', message: String(err) }))
+        logError('E_INGEST', String(err))
         return c.json({ code: 'E_INGEST', message: '入库失败' }, 500)
       }
     })

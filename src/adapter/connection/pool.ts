@@ -8,6 +8,7 @@
 export { createDbPool, pingDb }
 
 import { Pool } from 'pg'
+import { logError } from '../../trace/systemtrace/log'
 
 function createDbPool(DatabaseUrl: string): Pool {
   const pool = new Pool({
@@ -17,9 +18,7 @@ function createDbPool(DatabaseUrl: string): Pool {
     idleTimeoutMillis: 30000,
     query_timeout: 5000,
   })
-  pool.on('error', (err) =>
-    console.error(JSON.stringify({ code: 'E_POOL', message: err.message })),
-  )
+  pool.on('error', (err) => logError('E_POOL', err.message))
   return pool
 }
 

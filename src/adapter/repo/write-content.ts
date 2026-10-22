@@ -12,6 +12,7 @@ export type { Embedding }
 
 import type { Pool } from 'pg'
 import type { Chunk, timestamp } from './read-content'
+import { logError } from '../../trace/systemtrace/log'
 
 interface Embedding extends timestamp {
   id: string
@@ -86,7 +87,7 @@ async function writeChunksWithEmbeddings(
     return Chunks.length
   } catch (err) {
     await client.query('ROLLBACK').catch((rbErr) =>
-      console.error(JSON.stringify({ code: 'E_ROLLBACK', message: String(rbErr) })),
+      logError('E_ROLLBACK', String(rbErr)),
     ) // 别用回滚自身的错顶掉真因
     throw err
   } finally {

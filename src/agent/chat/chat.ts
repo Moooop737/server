@@ -4,6 +4,7 @@ import { convertToModelMessages, stepCountIs, streamText, type ToolSet, type UIM
 import { ChatHandle, PostgresRepo, RetrieverHandle } from '../../adapter/contract'
 import { inject, singleton } from 'tsyringe';
 import { buildAgentTools } from '../tool/registry';
+import { logError } from '../../trace/systemtrace/log'
 import type { LanguageModelV4 } from '@ai-sdk/provider';
 import type { Message, Repo } from '../../adapter/contract'
 
@@ -57,7 +58,7 @@ class ChatService {
       stopWhen: stepCountIs(5),
       abortSignal: Signal,
       onError: ({ error }) => {
-        console.error(JSON.stringify({ code: 'E_CHAT_STREAM', message: String(error) }))
+        logError('E_CHAT_STREAM', String(error))
       },
     })
 
@@ -77,7 +78,7 @@ class ChatService {
             parts: Parts,
           })
         } catch (err) {
-          console.error(JSON.stringify({ code: 'E_MESSAGE_SAVE', message: String(err) }))
+          logError('E_MESSAGE_SAVE', String(err))
         }
       },
     })

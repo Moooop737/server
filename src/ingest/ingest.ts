@@ -13,6 +13,7 @@
 
 import 'reflect-metadata'
 import { embedChunks } from '../adapter/contract'
+import { logInfo, logError } from '../trace/systemtrace/log'
 
 export { IngestFactory, IngestError }
 
@@ -73,11 +74,11 @@ class IngestFactory {
 
       // 一次故障只留一行日志：code 给人分支、reason 进库、cause 只进日志。主动取消不算错误，用 log 级不用 error 级
       const fail = async (Reason: string, Code = 'E_INGEST_FAILED', Cause?: unknown): Promise<IngestResult> => {
-        const line = JSON.stringify({ code: Code, resource_id: resource.id, reason: Reason, ...(Cause ? { cause: errMessage(Cause) } : {}) })
-        if (Code === 'E_INGEST_FAILED') console.error(line)
-        else console.log(line)
-        await repo.deleteChunksByResource(resource.id).catch((err) => logError('E_FAIL_CLEAN', err))
-        await repo.updateResourceStatus(resource.id, 'failed', Reason).catch((err) => logError('E_FAIL_MARK', err)) // 不复用 Signal
+        const extra = { resource_id: resource.id, reason: Reason, ...(Cause ? { cause: errMessage(Cause) } : {}) }
+        if (Code === 'E_INGEST_FAILED') logError(Code, Reason, extra)
+        else logInfo(Code, Reason, extra)
+        await repo.deleteChunksByResource(resource.id).catch((err) => logError('E_FAIL_CLEAN', errMessage(err)))
+        await repo.updateResourceStatus(resource.id, 'failed', Reason).catch((err) => logError('E_FAIL_MARK', errMessage(err))) // 不复用 Signal
         return { resource: { ...resource, status: 'failed', error_reason: Reason }, chunkCount: 0, failure: { code: Code, reason: Reason } }
       }
 
@@ -176,16 +177,12 @@ function thinPage(Raw: string | undefined, Text: string): string | undefined {
 
 // 建行之前就抛出（查重/建行本身失败）：没有行可留痕，只能报 resource:null + failure
 function notStarted(Err: unknown): IngestResult {
-  logError('E_NOT_STARTED', Err)
+  logError('E_NOT_STARTED', errMessage(Err))
   return { resource: null, chunkCount: 0, failure: { code: 'E_INGEST_FAILED', reason: errMessage(Err) } }
 }
 
 function errMessage(Err: unknown): string {
   return Err instanceof Error ? Err.message : String(Err)
-}
-
-function logError(Code: string, Err: unknown) {
-  console.error(JSON.stringify({ code: Code, message: errMessage(Err) }))
 }
 
 // AbortSignal.timeout() 触发时抛的是 name='TimeoutError' 的 DOMException（不保证是 Error 子类，所以只取 name）

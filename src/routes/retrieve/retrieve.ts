@@ -13,6 +13,7 @@ import { Hono } from 'hono'
 import { inject, injectable } from 'tsyringe'
 import { RetrieverError } from '../../retrieve/retrievers'
 import { RetrieverHandle } from '../../adapter/contract';
+import { logError } from '../../trace/systemtrace/log'
 
 export { RetrieveRoute }
 
@@ -62,7 +63,7 @@ class RetrieveRoute {
             return c.json({ code: err.code, message: err.message }, 409)
           }
         }
-        console.error(JSON.stringify({ code: 'E_RETRIEVE', message: String(err) }))
+        logError('E_RETRIEVE', String(err))
         return c.json({ code: 'E_RETRIEVE', message: '检索失败' }, 500)
       }
     })

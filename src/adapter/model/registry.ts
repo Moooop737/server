@@ -16,9 +16,9 @@ import { singleton } from 'tsyringe'
 import { providerRegistry } from '../provider/registry'
 import { type AlibabaChatModelId } from '@ai-sdk/alibaba'
 import { type DeepSeekProvider } from '@ai-sdk/deepseek'
-import { type OllamaProvider } from 'ai-sdk-ollama'
 import { type EmbeddingModelV4, type LanguageModelV4 } from '@ai-sdk/provider'
 import { type RegistedModels } from '../contract'
+import { logInfo } from '../../trace/systemtrace/log'
 
 export { ModelRegistry, type LanguageModelId, type EmbeddingModelId }
 
@@ -61,9 +61,6 @@ class ModelRegistry implements RegistedModels {
             }
         }
 
-        console.log(JSON.stringify({
-            code: 'I_MODELS',
-            message: `对话句柄=${Object.keys(this.languageModels).join(',') || '无'} 嵌入句柄=${Object.keys(this.embeddingModels).join(',') || '无'}`,
-        }))
+        logInfo('I_MODELS', `对话句柄=${Object.keys(this.languageModels).join(',') || '无'} 嵌入句柄=${Object.keys(this.embeddingModels).join(',') || '无'}`)
     }
 }

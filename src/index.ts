@@ -23,6 +23,9 @@ import { Scalar } from '@scalar/hono-api-reference';
 import { parse } from 'yaml';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
+import { createEndpointTrace } from './trace/systemtrace/endpoint';
+import { logInfo, logError } from './trace/systemtrace/log';
+import { TraceRoute } from './routes/trace/trace';
 
 void (async () => {
     const app = new Hono()
@@ -31,14 +34,16 @@ void (async () => {
     const openapi = parse(await readFile(join(__dirname, 'routes/doc/open-api.yml'), 'utf-8'))
 
     try {
+        app.use('*', createEndpointTrace(repo))
         app.route('/health', createHealthRoute(createHealthProbes(config, repo)))
         app.route('/resources', container.resolve(ResourcesRoute).build())
         app.route('/retrieve', container.resolve(RetrieveRoute).build())
         app.route('/chat', container.resolve(ChatRoute).build())
         app.route('/sessions', container.resolve(SessionsRoute).build())
-        app.route('/doc', Scalar.serve({ document: openapi }))
+        app.route('/traces', container.resolve(TraceRoute).build())
+        app.route('/doc', Scalar.serve({ document: openapi, defaultOpenAllTags: true, theme: 'kepler'}))
     } catch (err) {
-        console.error(JSON.stringify({ code: 'E_ASSEMBLY', message: String(err) }))
+        logError('E_ASSEMBLY', String(err))
         process.exit(1)
     }
 
@@ -48,5 +53,5 @@ void (async () => {
         hostname: config.host,
         port: config.port,
     })
-    console.log('Server listening on http://' + config.host + ':' + config.port)
+    logInfo('I_SERVER_READY', 'Server listening on http://' + config.host + ':' + config.port)
 })()

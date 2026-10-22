@@ -2,11 +2,11 @@ openapi: 3.1.0
 info:
   version: 0.1.0
   title: Knowledge Copilot API
-  description: Knowledge Copilot 的接口文档；会话、资源、检索、对话与健康检查。
+  description: Knowledge Copilot 的接口文档；会话、资源、检索、对话、健康检查与端点观测。除 /health 与 /traces* 外的业务响应头带 X-Trace-Id，可用 GET /traces/{traceId} 回读。
 servers:
   - url: http://127.0.0.1:3000
 tags:
-  - name: session
+  - name: sessions
     description: 会话历史API
   - name: chat
     description: 对话API
@@ -16,6 +16,8 @@ tags:
     description: 资源API
   - name: retrieve
     description: 召回API
+  - name: traces
+    description: 端点观测API
 paths:
   /health:
     get:
@@ -360,7 +362,7 @@ paths:
   /sessions:
     get:
       tags:
-        - session
+        - sessions
       operationId: listSessions
       summary: 会话列表
       responses:
@@ -385,7 +387,7 @@ paths:
                 $ref: '#/components/schemas/Error'
     post:
       tags:
-        - session
+        - sessions
       operationId: createSession
       summary: 创建会话
       requestBody:
@@ -420,7 +422,7 @@ paths:
   /sessions/{id}:
     patch:
       tags:
-        - session
+        - sessions
       operationId: updateSessionTitle
       summary: 修改会话标题
       parameters:
@@ -470,7 +472,7 @@ paths:
   /sessions/{id}/messages:
     get:
       tags:
-        - session
+        - sessions
       operationId: listSessionMessages
       summary: 读取会话消息
       parameters:
@@ -513,6 +515,79 @@ paths:
                 $ref: '#/components/schemas/Error'
         '500':
           description: 读取会话失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /traces:
+    get:
+      tags:
+        - traces
+      operationId: listTraces
+      summary: 最近的 endpoint trace
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: 返回条数，默认 50，上限 200
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: 按 started_at 倒序返回最近 N 条
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - traces
+                properties:
+                  traces:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Trace'
+        '500':
+          description: 读取观测失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /traces/{traceId}:
+    get:
+      tags:
+        - traces
+      operationId: getTrace
+      summary: 读取单条 endpoint trace
+      parameters:
+        - name: traceId
+          in: path
+          required: true
+          description: 响应头 X-Trace-Id 的值（UUID）
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 观测公共行
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - trace
+                properties:
+                  trace:
+                    $ref: '#/components/schemas/Trace'
+        '404':
+          description: traceId 不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 读取观测失败
           content:
             application/json:
               schema:
@@ -803,6 +878,71 @@ components:
           type: integer
         lexicalCount:
           type: integer
+    Trace:
+      type: object
+      required:
+        - trace_id
+        - session_id
+        - resource_id
+        - route
+        - http_status
+        - started_at
+        - ended_at
+        - duration_ms
+        - status
+        - error_code
+        - langfuse_trace_id
+        - created_at
+      properties:
+        trace_id:
+          type: string
+        session_id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        resource_id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        route:
+          type: string
+          description: METHOD + 路由模板，如 POST /chat
+        http_status:
+          type:
+            - integer
+            - 'null'
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        duration_ms:
+          type:
+            - integer
+            - 'null'
+        status:
+          type: string
+          enum:
+            - running
+            - ok
+            - error
+            - cancelled
+        error_code:
+          type:
+            - string
+            - 'null'
+        langfuse_trace_id:
+          type:
+            - string
+            - 'null'
+        created_at:
+          type: string
+          format: date-time
     Session:
       type: object
       required:

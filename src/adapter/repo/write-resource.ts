@@ -10,6 +10,7 @@ export { createResource, updateResourceStatus, updateResourceTitle, softDeleteRe
 import type { Pool, PoolClient } from 'pg'
 import type { Resource } from './read-content'
 import { rowToResource } from './read-content'
+import { logError } from '../../trace/systemtrace/log'
 
 async function createResource(
   Db: Pool,
@@ -103,6 +104,6 @@ async function markInterruptedAsFailed(Db: Pool): Promise<{ resources: number }>
 // 别用回滚自身的错顶掉真因
 function rollbackOrLog(Client: PoolClient): Promise<unknown> {
   return Client.query('ROLLBACK').catch((rbErr) =>
-    console.error(JSON.stringify({ code: 'E_ROLLBACK', message: String(rbErr) })),
+    logError('E_ROLLBACK', String(rbErr)),
   )
 }

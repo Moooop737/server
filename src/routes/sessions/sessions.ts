@@ -10,6 +10,7 @@ import 'reflect-metadata'
 import { Hono } from 'hono'
 import { inject, injectable } from 'tsyringe'
 import { PostgresRepo } from '../../adapter/contract'
+import { logError } from '../../trace/systemtrace/log'
 
 export { SessionsRoute }
 
@@ -31,7 +32,7 @@ class SessionsRoute {
       try {
         return c.json({ sessions: await repo.listSessions() })
       } catch (err) {
-        console.error(JSON.stringify({ code: 'E_SESSION_LIST', message: String(err) }))
+        logError('E_SESSION_LIST', String(err))
         return c.json({ code: 'E_SESSION_LIST', message: '读取会话列表失败' }, 500)
       }
     })
@@ -49,7 +50,7 @@ class SessionsRoute {
         const title = typeof body.title === 'string' ? body.title.trim() : ''
         return c.json(await repo.createSession(title || undefined), 201)
       } catch (err) {
-        console.error(JSON.stringify({ code: 'E_SESSION_CREATE', message: String(err) }))
+        logError('E_SESSION_CREATE', String(err))
         return c.json({ code: 'E_SESSION_CREATE', message: '创建会话失败' }, 500)
       }
     })
@@ -74,7 +75,7 @@ class SessionsRoute {
           ? c.json(updated)
           : c.json({ code: 'E_SESSION_NOT_FOUND', message: '会话不存在或已删除' }, 404)
       } catch (err) {
-        console.error(JSON.stringify({ code: 'E_SESSION_UPDATE', message: String(err) }))
+        logError('E_SESSION_UPDATE', String(err))
         return c.json({ code: 'E_SESSION_UPDATE', message: '修改会话标题失败' }, 500)
       }
     })
@@ -91,7 +92,7 @@ class SessionsRoute {
         }
         return c.json({ session_id: id, messages: await repo.getMessagesBySession(id) })
       } catch (err) {
-        console.error(JSON.stringify({ code: 'E_SESSION_READ', message: String(err) }))
+        logError('E_SESSION_READ', String(err))
         return c.json({ code: 'E_SESSION_READ', message: '读取会话失败' }, 500)
       }
     })

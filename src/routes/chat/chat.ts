@@ -13,6 +13,7 @@ import { Hono } from 'hono'
 import { inject, injectable } from 'tsyringe'
 import { PostgresRepo } from '../../adapter/contract'
 import { ChatService } from '../../agent/chat/chat'
+import { logError } from '../../trace/systemtrace/log'
 
 export { ChatRoute }
 
@@ -52,7 +53,7 @@ class ChatRoute {
         }
         return await this.chat.ask(query, body.sessionId, c.req.raw.signal)
       } catch (err) {
-        console.error(JSON.stringify({ code: 'E_CHAT', message: String(err) }))
+        logError('E_CHAT', String(err))
         return c.json({ code: 'E_CHAT', message: '问答失败' }, 500)
       }
     })

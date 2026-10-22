@@ -10,6 +10,7 @@
 import 'reflect-metadata'
 import { singleton } from 'tsyringe'
 import type { Repo } from './adapter/contract';
+import { logInfo, logWarn, logError } from './trace/systemtrace/log'
 
 export { AppConfig, getEnv, cleanUpOnBoot }
 
@@ -43,7 +44,7 @@ class AppConfig {
     }
     const embeddingDimensions = numOrThrow(getEnv('EMBEDDING_DIMENSIONS'), 'EMBEDDING_DIMENSIONS', 1024, 1, 16000)
     if (![2048, 1024, 512].includes(embeddingDimensions)) {
-      console.warn(JSON.stringify({ code: 'W_EMBEDDING_DIM', message: `EMBEDDING_DIMENSIONS=${embeddingDimensions} 无对应 HNSW 索引，检索将退化顺序扫描` }))
+      logWarn('W_EMBEDDING_DIM', `EMBEDDING_DIMENSIONS=${embeddingDimensions} 无对应 HNSW 索引，检索将退化顺序扫描`)
     }
 
     this.port = numOrThrow(getEnv('PORT'), 'PORT', 3000, 1, 65535)
@@ -65,20 +66,17 @@ async function cleanUpOnBoot(repo: Repo, config: AppConfig) {
   try {
     const cleaned = await repo.markInterruptedAsFailed()
     if (cleaned.resources > 0) {
-      console.log(`启动清扫：${cleaned.resources} 条 processing 资源转为 failed(入库中断)`)
+      logInfo('I_BOOT_CLEANUP', `启动清扫：${cleaned.resources} 条 processing 资源转为 failed(入库中断)`)
     }
   } catch (err) {
-    console.error(JSON.stringify({ code: 'E_CLEANUP', message: String(err) }))
+    logError('E_CLEANUP', String(err))
   }
 
   try {
     const stored = await repo.dimensionsInStore()
-    console.log(JSON.stringify({
-      code: 'I_VECTOR_DIMENSIONS',
-      message: `库中向量维度=${stored.join(',') || '空'} 检索维度=${config.embeddingDimensions}`,
-    }))
+    logInfo('I_VECTOR_DIMENSIONS', `库中向量维度=${stored.join(',') || '空'} 检索维度=${config.embeddingDimensions}`)
   } catch (err) {
-    console.error(JSON.stringify({ code: 'E_DIMENSION_PROBE', message: String(err) }))
+    logError('E_DIMENSION_PROBE', String(err))
   }
 }
 
@@ -113,7 +111,7 @@ function numOrThrow(
 }
 
 function fail(code: string, message: string): never {
-  console.error(JSON.stringify({ code, message }))
+  logError(code, message)
   process.exit(1)
 }
 

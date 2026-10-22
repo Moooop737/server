@@ -12,6 +12,7 @@ export { buildRetrieveTool }
 import { type Tool, tool } from 'ai'
 import { z } from 'zod'
 import { RetrieverError } from '../../../retrieve/retrievers'
+import { logError } from '../../../trace/systemtrace/log'
 
 import type { RetrieveToolInput, RetrieveToolOutput, RetrievedHit } from '../contracts'
 import type { Retriever, RetrievalResult, RetrievedChunk } from '../../../retrieve/contracts'
@@ -30,7 +31,7 @@ function buildRetrieveTool(Retriever: Retriever): Tool<RetrieveToolInput, Retrie
         if (err instanceof RetrieverError) {
           return { hits: [], vectorCount: 0, lexicalCount: 0, error: { code: err.code, message: err.message } }
         }
-        console.error(JSON.stringify({ code: 'E_TOOL_RETRIEVE', message: String(err) }))
+        logError('E_TOOL_RETRIEVE', String(err))
         throw err
       }
     },

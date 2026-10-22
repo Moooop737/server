@@ -9,7 +9,6 @@
  */
 
 export { ollamaHealthCheck, ollamaModelList, ollamaStatusList }
-export type { OllamaModelDetails, OllamaModelEntry, OllamaModelStatus }
 
 async function ollamaHealthCheck(BaseUrl: string): Promise<boolean> {
   try {

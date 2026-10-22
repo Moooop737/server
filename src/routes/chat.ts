@@ -11,13 +11,13 @@
 import 'reflect-metadata'
 import { Hono } from 'hono'
 import { inject, injectable } from 'tsyringe'
-import { PostgresRepo } from '../../adapter/contract'
-import { ChatService } from '../../agent/chat/chat'
-import { logError } from '../../trace/systemtrace/log'
+import { PostgresRepo } from '../adapter/contract'
+import { ChatService } from '../agent/chat/chat'
+import { logError } from '../trace/systemtrace/log'
 
 export { ChatRoute }
 
-import type { Repo } from '../../adapter/contract'
+import type { Repo } from '../adapter/contract'
 
 @injectable()
 class ChatRoute {

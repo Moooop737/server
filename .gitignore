@@ -4,3 +4,4 @@ test/
 .env
 *.log
 .DS_Store
+db/.drizzle/

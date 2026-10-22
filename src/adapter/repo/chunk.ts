@@ -1,18 +1,30 @@
 /**
- * 内容侧的写 —— chunk + 向量 + 行转 ready 的同事务，以及按资源删 chunks。
+ * chunk + embedding —— 按资源读 chunks、删 chunks、chunk/向量/行转 ready 的同事务写入。
  * 事务是这块的唯一边界：要么全写、要么全滚，既杜绝「有 chunk 无向量」，也杜绝「向量已落、行还 processing」。
- * number[] ↔ halfvec 字面量字符串的转换住本层（vecToHalfvecStr），不外漏（脊「数据与格式」条）。
- * 两条多行 INSERT 各算各的参数预算（chunk 6 参 / embedding 5 参），分批留位不实现 —— 见脊的 Deferred。
- * Embedding 的实体形状住本层：它只有写侧（读侧从不投影它），number[] 是端口契约、halfvec 字符串是 SQL 细节。
+ * number[] ↔ halfvec 字面量字符串的转换住本层（vecToHalfvecStr），不外漏；Embedding 只有写侧。
  */
 
-export { writeChunksWithEmbeddings, deleteChunksByResource }
-
-export type { Embedding }
+export { getChunksByResource, writeChunksWithEmbeddings, deleteChunksByResource, rowToChunk }
+export type { Chunk, Embedding }
 
 import type { Pool } from 'pg'
-import type { Chunk, timestamp } from './read-content'
 import { logError } from '../../trace/systemtrace/log'
+
+interface timestamp {
+  created_at: string
+  updated_at: string
+  deleted_at: string | null
+}
+
+interface Chunk extends timestamp {
+  id: string
+  resource_id: string
+  resource_uri: string
+  chunk_index: number
+  content: string
+  start_offset: number | null
+  end_offset: number | null
+}
 
 interface Embedding extends timestamp {
   id: string
@@ -21,6 +33,33 @@ interface Embedding extends timestamp {
   dimension: number
   model: string
   embedding: number[]
+}
+
+function iso(v: Date | null): string | null {
+  return v === null ? null : v.toISOString()
+}
+
+function rowToChunk(r: any): Chunk {
+  return {
+    id: r.id,
+    resource_id: r.resource_id,
+    resource_uri: r.resource_uri,
+    chunk_index: r.chunk_index,
+    content: r.content,
+    start_offset: r.start_offset,
+    end_offset: r.end_offset,
+    created_at: iso(r.created_at)!,
+    updated_at: iso(r.updated_at)!,
+    deleted_at: iso(r.deleted_at),
+  }
+}
+
+async function getChunksByResource(Db: Pool, ResourceId: string): Promise<Chunk[]> {
+  const { rows } = await Db.query(
+    `SELECT * FROM chunks WHERE resource_id = $1 AND deleted_at IS NULL ORDER BY chunk_index`,
+    [ResourceId],
+  )
+  return rows.map(rowToChunk)
 }
 
 async function writeChunksWithEmbeddings(

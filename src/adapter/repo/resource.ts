@@ -1,16 +1,74 @@
 /**
- * 资源行的写 —— 建行、改状态、改标题、软删、启动清扫。SQL 住本层，触发者仍是 ingest 与 bootstrap（AD-7：状态只有一个写入者）。
- * 每条 UPDATE 都带 `AND deleted_at IS NULL`：已软删的行不留痕、也不被改回 ready。
- * softDeleteResource 与 write-content 的 deleteChunksByResource 都各有一句 `DELETE FROM chunks`，故意不合并：
- * 前者在软删事务内（与 resources 的 deleted_at 同笔提交），后者是无事务的单语句清理，语义与失败面都不同。
+ * 资源功能 —— 资源行的读/写：getResource、建行、改状态/标题、软删、启动清扫。
+ * list/read 的 HTTP 投影由 routes/crud.ts 统一注册到 hono-crud；这里保留自定义写路径与 getResource。
+ * getResource 走 Drizzle；其余仍是 pg 裸 SQL。每条 UPDATE 都带 deleted_at IS NULL。
+ * softDeleteResource 与 chunk.ts 的 deleteChunksByResource 故意不合并：前者在软删事务内，后者是无事务单语句清理。
  */
 
-export { createResource, updateResourceStatus, updateResourceTitle, softDeleteResource, markInterruptedAsFailed }
+export {
+  createResource, updateResourceStatus, updateResourceTitle, softDeleteResource, markInterruptedAsFailed,
+  getResource, findActiveBySource,
+}
+export type { Resource }
 
+import { and, eq, isNull } from 'drizzle-orm'
 import type { Pool, PoolClient } from 'pg'
-import type { Resource } from './read-content'
-import { rowToResource } from './read-content'
+import { resources } from './orm/schema'
 import { logError } from '../../trace/systemtrace/log'
+import type { Orm } from './orm/client'
+
+interface timestamp {
+  created_at: string
+  updated_at: string
+  deleted_at: string | null
+}
+
+interface Resource extends timestamp {
+  id: string
+  title: string
+  source: string | null
+  data_uri: string
+  content_type: 'url' | 'markdown' | 'plaintext'
+  status: 'processing' | 'ready' | 'failed'
+  error_reason: string | null
+}
+
+function iso(v: Date | null): string | null {
+  return v === null ? null : v.toISOString()
+}
+
+function rowToResource(r: any): Resource {
+  return {
+    id: r.id,
+    title: r.title,
+    source: r.source,
+    data_uri: r.data_uri,
+    content_type: r.content_type,
+    status: r.status,
+    error_reason: r.error_reason,
+    created_at: iso(r.created_at)!,
+    updated_at: iso(r.updated_at)!,
+    deleted_at: iso(r.deleted_at),
+  }
+}
+
+async function getResource(Db: Orm, Id: string): Promise<Resource | null> {
+  const rows = await Db.select()
+    .from(resources)
+    .where(and(eq(resources.id, Id), isNull(resources.deleted_at)))
+    .limit(1)
+  return rows[0] ? rowToResource(rows[0]) : null
+}
+
+async function findActiveBySource(Db: Pool, Url: string): Promise<Resource | null> {
+  const { rows } = await Db.query(
+    `SELECT * FROM resources
+       WHERE source = $1 AND status IN ('ready', 'processing') AND deleted_at IS NULL
+       LIMIT 1`,
+    [Url],
+  )
+  return rows[0] ? rowToResource(rows[0]) : null
+}
 
 async function createResource(
   Db: Pool,

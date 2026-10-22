@@ -15,9 +15,9 @@ export interface ResolvedChunkerConfig {
   separators: string[]
 }
 
-export const DEFAULT_CHUNK_SIZE = 512
-export const DEFAULT_CHUNK_OVERLAP = 80
-export const DEFAULT_SEPARATORS = ['\n\n', '\n', '。']
+const DEFAULT_CHUNK_SIZE = 512
+const DEFAULT_CHUNK_OVERLAP = 80
+const DEFAULT_SEPARATORS = ['\n\n', '\n', '。']
 
 // 把可选配置补全成必填；overlap 超过 chunkSize/2 就压到一半，
 // 否则相邻块 90% 内容重复，等于同一段话存十几遍（向量冗余 + 检索全是重复命中）。

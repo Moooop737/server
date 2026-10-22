@@ -1,29 +1,30 @@
 /**
- * 资源路由 —— GET / 列表、GET /:id 单资源（判删除状态）、GET /:id/chunks 分块、POST / 入库（url 与 content 二选一）、
+ * 资源写/分块路由 —— GET /:id/chunks 分块、POST / 入库（url 与 content 二选一）、
  * DELETE /:id 软删（处理中的先按下取消再删）、POST /:id/abort 只取消不删。
+ * list/read 由 routes/crud.ts 统一注册到 hono-crud；本文件只保留用例型写路径与分块读取。
  * POST 只负责校验 body + 装配 Recipe/KBData，真正入库交 Factory.assemble(recipe).run(data)。
  * 取消开关由管线自己持有并按 resourceId 登记在 Deps.inflight，本路由只是按按钮的人之一；
  * 客户端断连**不再**是取消来源（run 不接 c.req.raw.signal），批量提交后关页面不影响入库。
  * fetcher/parser 由来源在此定死（url→http/html，content→passthrough/text）；chunker 可由 body 覆盖，缺省 'legacy'（注册表里的策略名）。
  * embed 不再走 body：它是装配层选定的 Deps.embedding（一行 model 句柄 + 标识 + 截维），随 Recipe 原样带进管线，写进 embeddings.model 的就是它的 modelId。
  * 失败映射：查重命中→409；建行后 failed→422（带 resource，failure.code 可为 E_CANCELLED / E_TIMEOUT / E_RESOURCE_GONE / E_INGEST_FAILED）；
- * 装配名不识别(E_UNKNOWN_STAGE)→400；id 非 UUID→400 E_BAD_ID；资源不存在或已软删→404 E_NOT_FOUND；读取单资源失败→500 E_READ；
+ * 装配名不识别(E_UNKNOWN_STAGE)→400；id 非 UUID→400 E_BAD_ID；资源不存在或已软删→404 E_NOT_FOUND；读取分块失败→500 E_CHUNKS；
  * 无可取消任务→409 E_NOT_PROCESSING（状态不是 processing）/ 409 E_NOT_INFLIGHT（是 processing 但不在本进程登记里，重启遗留）；未预期→500。
- * 成功：201 入库（可能带 warning，只是提示、不影响 ready 状态）；202 abort 已按下（异步生效）；204 软删；200 列表、单资源与分块。
+ * 成功：201 入库（可能带 warning，只是提示、不影响 ready 状态）；202 abort 已按下（异步生效）；204 软删；200 分块。
  */
 
 import 'reflect-metadata'
 import { Hono } from 'hono'
 import { inject, injectable } from 'tsyringe'
-import { IngestError, IngestFactory } from '../../ingest/ingest'
-import { InflightRegistry } from '../../ingest/inflight'
-import { PostgresRepo, EmbeddingHandle } from '../../adapter/contract'
-import { logError } from '../../trace/systemtrace/log'
+import { IngestError, IngestFactory } from '../ingest/ingest'
+import { InflightRegistry } from '../ingest/inflight'
+import { PostgresRepo, EmbeddingHandle } from '../adapter/contract'
+import { logError } from '../trace/systemtrace/log'
 
 export { ResourcesRoute }
 
-import type { Repo } from '../../adapter/contract'
-import type { Recipe, KBData } from '../../ingest/contracts'
+import type { Repo } from '../adapter/contract'
+import type { Recipe, KBData } from '../ingest/contracts'
 
 @injectable()
 class ResourcesRoute {
@@ -88,32 +89,6 @@ class ResourcesRoute {
       } catch (err) {
         logError('E_ABORT', String(err))
         return c.json({ code: 'E_ABORT', message: '取消失败' }, 500)
-      }
-    })
-
-    app.get('/', async (c) => {
-      try {
-        const resources = await repo.listResources()
-        return c.json({ resources })
-      } catch (err) {
-        logError('E_LIST', String(err))
-        return c.json({ code: 'E_LIST', message: '读取资源列表失败' }, 500)
-      }
-    })
-
-    app.get('/:id', async (c) => {
-      const id = c.req.param('id')
-      if (!uuidOk(id)) {
-        return c.json({ code: 'E_BAD_ID', message: 'id 需为 UUID' }, 400)
-      }
-      try {
-        const resource = await repo.getResource(id)
-        return resource
-          ? c.json({ resource })
-          : c.json({ code: 'E_NOT_FOUND', message: '资源不存在或已删除' }, 404)
-      } catch (err) {
-        logError('E_READ', String(err))
-        return c.json({ code: 'E_READ', message: '读取资源失败' }, 500)
       }
     })
 
@@ -205,7 +180,6 @@ class ResourcesRoute {
   }
 }
 
-// DELETE 与 abort 两个按 id 定位的端点共用这道形状校验：非法 id 直接 400，别放行到 pg 抛 invalid input syntax for type uuid
 function uuidOk(Id: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(Id)
 }

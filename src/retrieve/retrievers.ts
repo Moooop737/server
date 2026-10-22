@@ -23,7 +23,7 @@ import { singleton } from 'tsyringe'
 import { createRetrieverStageRegistry } from './recipes'
 
 import type { Retriever, RetrievedChunk } from './contracts'
-import type { VectorSearcher, LexicalSearcher, Fuser, RetrieverRecipe, RetrieverStageRegistry } from './contracts'
+import type { RetrieverRecipe, RetrieverStageRegistry } from './contracts'
 
 class RetrieverError extends Error {
   readonly code: string

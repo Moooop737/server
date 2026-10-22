@@ -8,7 +8,7 @@
  * 取消延迟有下限：parse 与 chunk 是同步的，pg 写入也不吃 signal ⇒ 只能在异步边界上观测到取消，最坏要等当前那一段同步/写事务跑完（撤回多写的那一笔由写入后的复查负责）。
  * 结果码：E_DUPLICATE 查重 / E_CANCELLED 取消 / E_TIMEOUT stage 超时 / E_RESOURCE_GONE 写入期间资源被删 / E_INGEST_FAILED 其余。
  * 硬约束：Signal 只喂 fetch/embed 这类长操作；fail() 落库改状态绝不复用 Signal（aborted signal 会连"失败留痕"一起杀掉）。
- * 依赖：contracts(类型) / adapter 的门(Repo,EmbeddingHandle,embedChunks,Resource) / inflight(取消登记处) / recipes(注册表经构造注入)。
+ * 依赖：contracts(类型) / adapter 的门(Repo,EmbeddingHandle,embedChunks) / inflight(取消登记处) / recipes(注册表经构造注入)。
  */
 
 import 'reflect-metadata'
@@ -19,7 +19,6 @@ export { IngestFactory, IngestError }
 
 import type { Recipe, KBData, Ingest, IngestResult, IngestContext, StageRegistry } from './contracts'
 import { InflightRegistry } from './inflight'
-import type { Resource } from '../adapter/contract'
 import { container, singleton } from 'tsyringe';
 import { createStageRegistry } from './recipes';
 

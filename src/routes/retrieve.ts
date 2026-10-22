@@ -11,9 +11,9 @@
 import 'reflect-metadata'
 import { Hono } from 'hono'
 import { inject, injectable } from 'tsyringe'
-import { RetrieverError } from '../../retrieve/retrievers'
-import { RetrieverHandle } from '../../adapter/contract';
-import { logError } from '../../trace/systemtrace/log'
+import { RetrieverError } from '../retrieve/retrievers'
+import { RetrieverHandle } from '../adapter/contract';
+import { logError } from '../trace/systemtrace/log'
 
 export { RetrieveRoute }
 

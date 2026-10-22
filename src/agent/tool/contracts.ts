@@ -38,15 +38,3 @@ interface RetrieveToolOutput {
   lexicalCount: number
   error: { code: string; message: string } | null // 非 null 时 hits 为空、两个 count 为 0
 }
-
-interface ResourceToolInput {
-  chunckId: string
-  returnResource: boolean
-  startOffset: number | null
-  endOffset: number | null
-}
-
-interface ResourceToolOutput{
-  resourceId : number 
-
-}

@@ -72,7 +72,7 @@ function splitKeepingSeparator(text: string, sep: string): string[] {
 
 // ── ② 保护段：段内整块不动，段间才切细 ──
 
-export function buildUnits(text: string, cfg: ResolvedChunkerConfig): SplitUnit[] {
+function buildUnits(text: string, cfg: ResolvedChunkerConfig): SplitUnit[] {
   const spans = protectedSpans(text)
   const units: SplitUnit[] = []
 
@@ -125,7 +125,7 @@ function forceSplit(text: string, base: number, maxSize = ABSOLUTE_MAX_SIZE): Sp
 
 // ── ③ 装箱 + 语义重叠 ──
 
-export function mergeUnits(units: SplitUnit[], cfg: ResolvedChunkerConfig): RawChunk[] {
+function mergeUnits(units: SplitUnit[], cfg: ResolvedChunkerConfig): RawChunk[] {
   const { chunkSize, chunkOverlap } = cfg
   const chunks: RawChunk[] = []
   let current: SplitUnit[] = []

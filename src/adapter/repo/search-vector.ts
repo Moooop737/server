@@ -8,13 +8,14 @@
  * 3. `::halfvec(N)` 的 N 是类型修饰符，只接受 SQL 字面量、不能用绑定参数 ⇒ Dim 经整数校验后拼进文本，
  *    这道 Number.isInteger 校验是该处唯一的注入防线（AD-9）。
  * 软删谓词只加 `r.deleted_at IS NULL`：chunks 物理删、embeddings 经 FK CASCADE 随之消失。
+ * dimensionsInStore 只数 embeddings 实际存了哪些维度，供检索前的混维判定。
  */
 
-export { vectorCandidates }
+export { vectorCandidates, dimensionsInStore }
 
 import type { Pool } from 'pg'
 import type { ChunkCandidate } from '../contract'
-import { rowToChunk } from './read-content'
+import { rowToChunk } from './chunk'
 
 async function vectorCandidates(
   Db: Pool,
@@ -49,4 +50,9 @@ async function vectorCandidates(
     similarity: Number(row.similarity),
     lexicalScore: null,
   }))
+}
+
+async function dimensionsInStore(Db: Pool): Promise<number[]> {
+  const { rows } = await Db.query(`SELECT DISTINCT dimension FROM embeddings ORDER BY dimension`)
+  return rows.map((row: { dimension: number }) => Number(row.dimension))
 }

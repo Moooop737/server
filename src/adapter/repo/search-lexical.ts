@@ -14,7 +14,7 @@ export { lexicalCandidates }
 
 import type { Pool } from 'pg'
 import type { ChunkCandidate } from '../contract'
-import { rowToChunk } from './read-content'
+import { rowToChunk } from './chunk'
 
 async function lexicalCandidates(
   Db: Pool,

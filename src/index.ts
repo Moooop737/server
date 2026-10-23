@@ -12,6 +12,7 @@ import { ResourcesRoute } from './routes/resources'
 import { RetrieveRoute } from './routes/retrieve'
 import { ChatRoute } from './routes/chat'
 import { SessionsRoute } from './routes/sessions'
+import { ObservabilityRoute } from './routes/observability'
 import { createCrudRoot, registerAllCrud } from './routes/crud'
 import { createDocRoute } from './routes/doc'
 import { PostgresRepo } from './adapter/contract'
@@ -19,6 +20,9 @@ import { AppConfig, cleanUpOnBoot } from './config'
 import { serve } from '@hono/node-server'
 import { createEndpointTrace } from './trace/systemtrace/endpoint'
 import { logInfo, logError } from './trace/systemtrace/log'
+import { setupLangfuse } from './trace/llmtrace/langfuse'
+
+setupLangfuse()
 
 void (async () => {
   const repo = container.resolve(PostgresRepo)
@@ -32,6 +36,7 @@ void (async () => {
     await registerAllCrud(app)
     app.route('/resources', container.resolve(ResourcesRoute).build())
     app.route('/sessions', container.resolve(SessionsRoute).build())
+    app.route('/observability', container.resolve(ObservabilityRoute).build())
     app.route('/health', createHealthRoute(createHealthProbes(config, repo)))
     app.route('/retrieve', container.resolve(RetrieveRoute).build())
     app.route('/chat', container.resolve(ChatRoute).build())

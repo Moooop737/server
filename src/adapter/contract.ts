@@ -30,7 +30,9 @@
 
 export {RetrieverHandle, PostgresRepo, EmbeddingHandle, ChatHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, embedChunks }
 export { resources, sessions, messages, traces } from './repo/orm/schema'
+export { listChatSessions, listChatTraces, getChatTrace } from './repo/observability'
 export type { Repo, ChunkCandidate, Resource, Message, TracePayloads, TracePayloadOmitReason, RegistedProviders, RegistedModels }
+export type { ChatSessionSummary, ChatTraceSummary } from './repo/observability'
 
 import 'reflect-metadata'
 import { inject, singleton } from 'tsyringe'
@@ -44,7 +46,8 @@ import {
 import { writeChunksWithEmbeddings, deleteChunksByResource, getChunksByResource } from './repo/chunk'
 import { dimensionsInStore, vectorCandidates } from './repo/search-vector'
 import { lexicalCandidates } from './repo/search-lexical'
-import { insertTrace, finishTrace } from './repo/trace'
+import { insertTrace, finishTrace, setTraceSession } from './repo/trace'
+import { listChatSessions, listChatTraces, getChatTrace } from './repo/observability'
 import { getSession } from './repo/session'
 import { createMessage, getMessagesBySession } from './repo/message'
 import { ollamaHealthCheck, ollamaModelList, ollamaStatusList } from './connection/ollama'
@@ -58,6 +61,7 @@ import type { Resource } from './repo/resource'
 import type { Chunk, Embedding } from './repo/chunk'
 import type { Session } from './repo/session'
 import type { Message } from './repo/message'
+import type { ChatSessionSummary, ChatTraceSummary } from './repo/observability'
 import type { Orm } from './repo/orm/client'
 import type { TraceStart, TraceFinish, TracePayloads, TracePayloadOmitReason } from './repo/trace'
 import type { EmbeddingModelV4, LanguageModelV4, ProviderV4 } from '@ai-sdk/provider';
@@ -95,6 +99,11 @@ interface Repo {
 
   insertTrace(Entry: TraceStart): Promise<void>
   finishTrace(TraceId: string, Finish: TraceFinish): Promise<void>
+  setTraceSession(TraceId: string, SessionId: string): Promise<void>
+
+  listChatSessions(Offset: number, Limit: number): Promise<{ Items: ChatSessionSummary[]; TotalCount: number }>
+  listChatTraces(SessionId: string | null, Offset: number, Limit: number): Promise<{ Items: ChatTraceSummary[]; TotalCount: number }>
+  getChatTrace(TraceId: string): Promise<ChatTraceSummary | null>
 }
 
 interface ChunkCandidate {
@@ -228,6 +237,22 @@ class PostgresRepo implements Repo {
 
   finishTrace(TraceId: string, Finish: TraceFinish) {
     return finishTrace(this.db, TraceId, Finish)
+  }
+
+  setTraceSession(TraceId: string, SessionId: string) {
+    return setTraceSession(this.db, TraceId, SessionId)
+  }
+
+  listChatSessions(Offset: number, Limit: number) {
+    return listChatSessions(this.db, Offset, Limit)
+  }
+
+  listChatTraces(SessionId: string | null, Offset: number, Limit: number) {
+    return listChatTraces(this.db, SessionId, Offset, Limit)
+  }
+
+  getChatTrace(TraceId: string) {
+    return getChatTrace(this.db, TraceId)
   }
 }
 

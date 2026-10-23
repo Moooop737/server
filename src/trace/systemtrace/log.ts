@@ -3,7 +3,7 @@
  * trace_id 由 AsyncLocalStorage 提供：endpoint.ts 在整段请求外包 runWithTrace；pino 的 mixin 每次写日志时取号，
  *   不在请求作用域（启动、后台任务、流式回调）时该字段省略，不伪造。
  * 三个 logX 只决定 level；code 用稳定的 E_/W_/I_ 标识，message 写人话。
- * chat 的流式回调在请求作用域之外执行：先用 currentTraceId 取号，再用 runWithTrace 把回调包回同一 trace（3.2 接）。
+ * 流式回调（chat 的 onError/onEnd）在请求作用域之外执行：先用 currentTraceId 取号，再用 runWithTrace 把回调包回同一 trace。
  */
 
 export { runWithTrace, currentTraceId, logInfo, logWarn, logError }

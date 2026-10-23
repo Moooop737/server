@@ -25,6 +25,7 @@ const Tags = [
   { name: 'Traces', description: '端点观测 trace；payloads 只在失败/白名单成功时记录，列表不返回' },
   { name: 'Retrieve', description: '召回' },
   { name: 'Chat', description: '对话' },
+  { name: 'Observability', description: '对话观测：列表读本地库，观测内容按 langfuse_trace_id 懒加载' },
   { name: 'Health', description: '服务探针' },
 ]
 
@@ -32,6 +33,33 @@ const Json = (Schema: object) => ({ 'application/json': { schema: Schema } })
 const Ref = (Name: string) => ({ $ref: `#/components/schemas/${Name}` })
 const Err = (Description: string) => ({ description: Description, content: Json(Ref('Error')) })
 const Ok = (Description: string, Schema: object) => ({ description: Description, content: Json(Schema) })
+
+const PageSchema = {
+  type: 'object',
+  required: ['page', 'per_page', 'total_count', 'total_pages'],
+  properties: {
+    page: { type: 'integer' },
+    per_page: { type: 'integer' },
+    total_count: { type: 'integer' },
+    total_pages: { type: 'integer' },
+  },
+}
+
+const ChatTraceSchema = {
+  type: 'object',
+  required: ['id', 'session_id', 'session_title', 'status', 'started_at', 'ended_at', 'duration_ms', 'error_code', 'langfuse_trace_id'],
+  properties: {
+    id: { type: 'string', format: 'uuid' },
+    session_id: { type: 'string', format: 'uuid', nullable: true },
+    session_title: { type: 'string', nullable: true },
+    status: { type: 'string' },
+    started_at: { type: 'string', format: 'date-time' },
+    ended_at: { type: 'string', format: 'date-time', nullable: true },
+    duration_ms: { type: 'integer', nullable: true },
+    error_code: { type: 'string', nullable: true },
+    langfuse_trace_id: { type: 'string', nullable: true },
+  },
+}
 
 const CrudMethod = { list: 'get', read: 'get', create: 'post', update: 'patch', delete: 'delete' } as const
 
@@ -185,6 +213,94 @@ const CustomPaths = {
         400: Err('id 不是 UUID'),
         404: Err('会话不存在或已删除'),
         500: Err('读取会话失败'),
+      },
+    },
+  },
+  '/observability/sessions': {
+    get: {
+      tags: ['Observability'],
+      operationId: 'listChatSessions',
+      summary: '有对话的会话（本地库）',
+      parameters: [
+        { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1 } },
+        { name: 'per_page', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } },
+      ],
+      responses: {
+        200: Ok('会话摘要、分页与 Langfuse 是否可用', {
+          type: 'object',
+          required: ['sessions', 'langfuse_enabled', 'pagination'],
+          properties: {
+            sessions: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['id', 'title', 'updated_at', 'chat_count', 'last_chat_at'],
+                properties: {
+                  id: { type: 'string', format: 'uuid' },
+                  title: { type: 'string' },
+                  updated_at: { type: 'string', format: 'date-time' },
+                  chat_count: { type: 'integer' },
+                  last_chat_at: { type: 'string', format: 'date-time' },
+                },
+              },
+            },
+            langfuse_enabled: { type: 'boolean' },
+            pagination: PageSchema,
+          },
+        }),
+        400: Err('分页参数不合法'),
+        500: Err('读取会话观测失败'),
+      },
+    },
+  },
+  '/observability/chats': {
+    get: {
+      tags: ['Observability'],
+      operationId: 'listChatTraces',
+      summary: '最近的 /chat 记录（本地库，可按会话过滤）',
+      parameters: [
+        { name: 'session_id', in: 'query', schema: { type: 'string', format: 'uuid' } },
+        { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1 } },
+        { name: 'per_page', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } },
+      ],
+      responses: {
+        200: Ok('对话行与分页；不含 Langfuse 观测内容', {
+          type: 'object',
+          required: ['chats', 'pagination'],
+          properties: {
+            chats: { type: 'array', items: ChatTraceSchema },
+            pagination: PageSchema,
+          },
+        }),
+        400: Err('session_id 或分页参数不合法'),
+        500: Err('读取对话列表失败'),
+      },
+    },
+  },
+  '/observability/traces/{id}': {
+    get: {
+      tags: ['Observability'],
+      operationId: 'readChatObservations',
+      summary: '按本地 trace id 懒加载 Langfuse 观测',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: '本地 trace UUID', schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        200: Ok('Langfuse observations（input/output 已尽量解析为 JSON）', {
+          type: 'object',
+          required: ['trace', 'observations', 'truncated', 'fetched_at'],
+          properties: {
+            trace: ChatTraceSchema,
+            observations: { type: 'array', items: { type: 'object', additionalProperties: true } },
+            truncated: { type: 'boolean' },
+            fetched_at: { type: 'string', format: 'date-time' },
+          },
+        }),
+        400: Err('id 不是 UUID'),
+        404: Err('这条对话不存在'),
+        409: Err('流未收口，或没有拿到 Langfuse trace id'),
+        502: Err('Langfuse 鉴权/读取失败'),
+        503: Err('Langfuse 未配置、限流或不可达'),
       },
     },
   },

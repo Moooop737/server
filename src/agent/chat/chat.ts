@@ -4,7 +4,8 @@ import { convertToModelMessages, stepCountIs, streamText, type ToolSet, type UIM
 import { ChatHandle, PostgresRepo, RetrieverHandle } from '../../adapter/contract'
 import { inject, singleton } from 'tsyringe';
 import { buildAgentTools } from '../tool/registry';
-import { logError } from '../../trace/systemtrace/log'
+import { CHAT_FUNCTION_ID, getLlmtraceBridge } from '../../trace/llmtrace/bridge'
+import { currentTraceId, logError, runWithTrace } from '../../trace/systemtrace/log'
 import type { LanguageModelV4 } from '@ai-sdk/provider';
 import type { Message, Repo } from '../../adapter/contract'
 
@@ -37,6 +38,22 @@ class ChatService {
   }
 
   async ask(Query: string, SessionId: string, Signal: AbortSignal): Promise<Response> {
+    const TraceId = currentTraceId()
+    const StartedMs = Date.now()
+    const withTrace = <T>(Fn: () => T): T => TraceId === undefined ? Fn() : runWithTrace(TraceId, Fn)
+    const Bridge = getLlmtraceBridge()
+    if (TraceId !== undefined) {
+      Bridge?.beginChat({ sessionId: SessionId, localTraceId: TraceId })
+    }
+
+    if (TraceId !== undefined) {
+      try {
+        await this.repo.setTraceSession(TraceId, SessionId)
+      } catch (err) {
+        logError('E_TRACE_WRITE', `更新 trace session 失败: ${String(err)}`)
+      }
+    }
+
     const Stored = await this.repo.getMessagesBySession(SessionId)
     const History = Stored.slice(-HISTORY_MESSAGES).map(storedUiMessage).filter((Message): Message is UIMessage => Message !== null)
     const UserStored = await this.repo.createMessage({
@@ -47,27 +64,59 @@ class ChatService {
     })
     const Messages: UIMessage[] = [
       ...History,
-      { id: UserStored.message_id, role: 'user', parts: [{ type: 'text', text: Query }] },
+      { id: UserStored.id, role: 'user', parts: [{ type: 'text', text: Query }] },
     ]
+    const ModelMessages = await convertToModelMessages(Messages)
 
-    const Result = streamText({
+    let StreamError: unknown = null
+    const Start = () => streamText({
       model: this.model,
-      messages: await convertToModelMessages(Messages),
+      messages: ModelMessages,
       instructions: INSTRUCTIONS,
       tools: this.tools,
       stopWhen: stepCountIs(5),
       abortSignal: Signal,
+      telemetry: { functionId: CHAT_FUNCTION_ID },
       onError: ({ error }) => {
-        logError('E_CHAT_STREAM', String(error))
+        StreamError = error
+        withTrace(() => logError('E_CHAT_STREAM', String(error)))
       },
     })
+
+    const Result = Start()
 
     return Result.toUIMessageStreamResponse({
       originalMessages: Messages,
       onError: () => '问答失败',
       /* 中断/取消不落 assistant：半截回答只在界面上标「未完整」，库里留的是一条孤立 user 消息。 */
-      onEnd: async ({ responseMessage, isAborted }) => {
-        if (isAborted) return
+      onEnd: (Event) => withTrace(async () => {
+        const { responseMessage, isAborted, isCancelled, outcome } = Event
+        const Status: 'ok' | 'error' | 'cancelled' =
+          isAborted || isCancelled || outcome.status === 'aborted'
+            ? 'cancelled'
+            : outcome.status === 'completed' && StreamError === null
+              ? 'ok'
+              : 'error'
+        const LangfuseTraceId = TraceId === undefined ? undefined : Bridge?.takeChatTraceId(TraceId)
+
+        if (TraceId !== undefined) {
+          try {
+            await this.repo.finishTrace(TraceId, {
+              ended_at: new Date().toISOString(),
+              duration_ms: Date.now() - StartedMs,
+              http_status: 200,
+              status: Status,
+              error_code: Status === 'error' ? 'E_CHAT_STREAM' : null,
+              payloads: null,
+              session_id: SessionId,
+              ...(LangfuseTraceId === undefined ? {} : { langfuse_trace_id: LangfuseTraceId }),
+            })
+          } catch (err) {
+            logError('E_TRACE_WRITE', `流式收口 trace 失败: ${String(err)}`)
+          }
+        }
+
+        if (isAborted || isCancelled) return
         const Parts = responseMessage.parts
         const Content = Parts.map((Part) => (Part.type === 'text' ? Part.text : '')).join('')
         try {
@@ -80,7 +129,7 @@ class ChatService {
         } catch (err) {
           logError('E_MESSAGE_SAVE', String(err))
         }
-      },
+      }),
     })
   }
 }
@@ -90,5 +139,5 @@ class ChatService {
 function storedUiMessage(Message: Message): UIMessage | null {
   const Parts = Message.parts.filter((Part) => Part.type === 'text')
   if (Parts.length === 0) return null
-  return { id: Message.message_id, role: Message.role, parts: Parts }
+  return { id: Message.id, role: Message.role, parts: Parts }
 }

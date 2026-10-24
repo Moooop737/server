@@ -1,6 +1,6 @@
 export { ChatService }
 
-import { convertToModelMessages, stepCountIs, streamText, type ToolSet, type UIMessage } from 'ai'
+import { convertToModelMessages, createUIMessageStreamResponse, stepCountIs, streamText, toUIMessageStream, type ToolSet, type UIMessage } from 'ai'
 import { ChatHandle, PostgresRepo, RetrieverHandle } from '../../adapter/contract'
 import { inject, singleton } from 'tsyringe';
 import { buildAgentTools } from '../tool/registry';
@@ -85,7 +85,9 @@ class ChatService {
 
     const Result = Start()
 
-    return Result.toUIMessageStreamResponse({
+    const Stream = toUIMessageStream({
+      stream: Result.stream,
+      tools: this.tools,
       originalMessages: Messages,
       onError: () => '问答失败',
       /* 中断/取消不落 assistant：半截回答只在界面上标「未完整」，库里留的是一条孤立 user 消息。 */
@@ -131,6 +133,8 @@ class ChatService {
         }
       }),
     })
+
+    return createUIMessageStreamResponse({ stream: Stream })
   }
 }
 

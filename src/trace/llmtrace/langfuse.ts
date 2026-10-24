@@ -8,11 +8,12 @@
 
 export { setupLangfuse }
 
-import { trace } from '@opentelemetry/api'
+import { context, trace } from '@opentelemetry/api'
 import { TracerProvider } from '@opentelemetry/sdk-trace'
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks'
 import { LangfuseSpanProcessor } from '@langfuse/otel'
 import { LangfuseVercelAiSdkIntegration } from '@langfuse/vercel-ai-sdk'
-import { LangfuseOtelSpanAttributes } from '@langfuse/tracing'
+import { LangfuseOtelSpanAttributes, startObservation } from '@langfuse/tracing'
 import { registerTelemetry } from 'ai'
 import { currentTraceId, logInfo } from '../systemtrace/log'
 import { CHAT_FUNCTION_ID, setLlmtraceBridge } from './bridge'
@@ -20,6 +21,7 @@ import { CHAT_FUNCTION_ID, setLlmtraceBridge } from './bridge'
 import type { Span } from '@opentelemetry/api'
 import type { SpanProcessor } from '@opentelemetry/sdk-trace'
 import type { ChatTraceParams } from './bridge'
+import type { StageSink } from '../systemtrace/stage'
 
 interface SdkSpan extends Span {
   readonly parentSpanContext?: { spanId: string }
@@ -30,6 +32,7 @@ const Chats = new Map<string, string>()
 const TraceIds = new Map<string, string>()
 
 let started = false
+let enabled = false
 
 function setupLangfuse(): void {
   if (started) return
@@ -38,11 +41,13 @@ function setupLangfuse(): void {
     logInfo('I_TRACE_EXPORT_DISABLED', 'Langfuse 三件套未配置，chat trace 只写本地公共行')
     return
   }
+  enabled = true
+  context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable())
   const processor = new LangfuseSpanProcessor()
   const provider = new TracerProvider({ spanProcessors: [processor, new ChatSpanProcessor()] })
   trace.setGlobalTracerProvider(provider)
   registerTelemetry(new LangfuseVercelAiSdkIntegration())
-  setLlmtraceBridge({ beginChat, takeChatTraceId })
+  setLlmtraceBridge({ beginChat, takeChatTraceId, createStageSink })
 }
 
 function beginChat(Params: ChatTraceParams): void {
@@ -57,6 +62,24 @@ function takeChatTraceId(LocalTraceId: string): string | undefined {
     Chats.delete(LocalTraceId)
   }
   return TraceId
+}
+
+function createStageSink(): StageSink | null {
+  if (!enabled) return null
+  return {
+    embedTelemetry: 'on',
+    record(Stage) {
+      const Span = startObservation(Stage.stage, { input: Stage.input }, {
+        asType: 'span',
+        startTime: new Date(Stage.started_at),
+      })
+      Span.update({
+        output: Stage.output,
+        ...(Stage.status === 'error' ? { level: 'ERROR', statusMessage: 'stage error' } : {}),
+      })
+      Span.end(new Date(Stage.ended_at))
+    },
+  }
 }
 
 class ChatSpanProcessor implements SpanProcessor {

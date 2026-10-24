@@ -1,7 +1,8 @@
 /**
- * 资源写/分块路由 —— GET /:id/chunks 分块、POST / 入库（url 与 content 二选一）、
+ * 资源写/分块/计数路由 —— GET /stats 各状态计数、GET /:id/chunks 分页+内容搜索、POST / 入库（url 与 content 二选一）、
  * DELETE /:id 软删（处理中的先按下取消再删）、POST /:id/abort 只取消不删。
- * list/read 由 routes/crud.ts 统一注册到 hono-crud；本文件只保留用例型写路径与分块读取。
+ * list/read 由 routes/crud.ts 统一注册到 hono-crud；本文件只保留用例型写路径、分块读取与计数。
+ * GET /stats 依赖挂载顺序：本路由必须先于 CRUD 挂载，否则 /resources/:id 会把 stats 当成 id。
  * POST 只负责校验 body + 装配 Recipe/KBData，真正入库交 Factory.assemble(recipe).run(data)。
  * 取消开关由管线自己持有并按 resourceId 登记在 Deps.inflight，本路由只是按按钮的人之一；
  * 客户端断连**不再**是取消来源（run 不接 c.req.raw.signal），批量提交后关页面不影响入库。
@@ -19,7 +20,8 @@ import { inject, injectable } from 'tsyringe'
 import { IngestError, IngestFactory } from '../ingest/ingest'
 import { InflightRegistry } from '../ingest/inflight'
 import { PostgresRepo, EmbeddingHandle } from '../adapter/contract'
-import { logError } from '../trace/systemtrace/log'
+import { createDbStageSink } from '../trace/systemtrace/stage-sink'
+import { currentTraceId, logError } from '../trace/systemtrace/log'
 
 export { ResourcesRoute }
 
@@ -49,6 +51,15 @@ class ResourcesRoute {
     const app = new Hono()
     const repo = this.repo
     const embedding = this.embedding
+
+    app.get('/stats', async (c) => {
+      try {
+        return c.json({ counts: await repo.resourceCounts() })
+      } catch (err) {
+        logError('E_RESOURCE_STATS', String(err))
+        return c.json({ code: 'E_RESOURCE_STATS', message: '读取资源计数失败' }, 500)
+      }
+    })
 
     app.delete('/:id', async (c) => {
       const id = c.req.param('id')
@@ -97,12 +108,32 @@ class ResourcesRoute {
       if (!uuidOk(id)) {
         return c.json({ code: 'E_BAD_ID', message: 'id 需为 UUID' }, 400)
       }
+      const PageRaw = c.req.query('page')
+      const PerPageRaw = c.req.query('per_page')
+      const Page = PageRaw === undefined ? 1 : Number(PageRaw)
+      const PerPage = PerPageRaw === undefined ? 20 : Number(PerPageRaw)
+      if (!Number.isInteger(Page) || Page < 1 || Page > 1_000_000 || !Number.isInteger(PerPage) || PerPage < 1 || PerPage > 100) {
+        return c.json({ code: 'E_BAD_QUERY', message: 'page 需为 1-1000000 的整数，per_page 需为 1-100 的整数' }, 400)
+      }
+      const Search = (c.req.query('search') ?? '').trim().slice(0, 200)
       try {
         if (!(await repo.getResource(id))) {
           return c.json({ code: 'E_NOT_FOUND', message: '资源不存在或已删除' }, 404)
         }
-        const chunks = await repo.getChunksByResource(id)
-        return c.json({ chunks })
+        const First = await repo.getChunksPage(id, (Page - 1) * PerPage, PerPage, Search)
+        const TotalPages = Math.ceil(First.TotalCount / PerPage)
+        /* 越界页码不原样回显：先收敛到末页再查，否则 curl / Try-it 会拿到自相矛盾的空页 */
+        const SafePage = Math.min(Page, Math.max(1, TotalPages))
+        const Result = SafePage === Page ? First : await repo.getChunksPage(id, (SafePage - 1) * PerPage, PerPage, Search)
+        return c.json({
+          chunks: Result.Items,
+          pagination: {
+            page: SafePage,
+            per_page: PerPage,
+            total_count: Result.TotalCount,
+            total_pages: TotalPages,
+          },
+        })
       } catch (err) {
         logError('E_CHUNKS', String(err))
         return c.json({ code: 'E_CHUNKS', message: '读取分块失败' }, 500)
@@ -161,7 +192,15 @@ class ResourcesRoute {
       }
 
       try {
-        const result = await this.factory.assemble(recipe).run(data)
+        const TraceId = currentTraceId()
+        const result = await this.factory.assemble(recipe).run(data, undefined, { sink: createDbStageSink(this.repo) })
+        if (TraceId !== undefined && result.resource !== null) {
+          try {
+            await this.repo.setTraceResource(TraceId, result.resource.id)
+          } catch (err) {
+            logError('E_TRACE_WRITE', `回填 trace resource_id 失败: ${String(err)}`)
+          }
+        }
         if (result.failure?.code === 'E_DUPLICATE') {
           return c.json({ code: 'E_DUPLICATE', message: result.failure.reason }, 409)
         }

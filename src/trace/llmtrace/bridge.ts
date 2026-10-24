@@ -6,6 +6,8 @@
 export { getLlmtraceBridge, setLlmtraceBridge, CHAT_FUNCTION_ID }
 export type { LlmtraceBridge, ChatTraceParams }
 
+import type { StageSink } from '../systemtrace/stage'
+
 const CHAT_FUNCTION_ID = 'chat'
 
 interface ChatTraceParams {
@@ -16,6 +18,7 @@ interface ChatTraceParams {
 interface LlmtraceBridge {
   beginChat(Params: ChatTraceParams): void
   takeChatTraceId(LocalTraceId: string): string | undefined
+  createStageSink(): StageSink | null
 }
 
 let bridge: LlmtraceBridge | null = null

@@ -7,9 +7,9 @@
 
 export {
   createResource, updateResourceStatus, updateResourceTitle, softDeleteResource, markInterruptedAsFailed,
-  getResource, findActiveBySource,
+  getResource, findActiveBySource, resourceCounts,
 }
-export type { Resource }
+export type { Resource, ResourceCounts }
 
 import { and, eq, isNull } from 'drizzle-orm'
 import type { Pool, PoolClient } from 'pg'
@@ -31,6 +31,14 @@ interface Resource extends timestamp {
   content_type: 'url' | 'markdown' | 'plaintext'
   status: 'processing' | 'ready' | 'failed'
   error_reason: string | null
+}
+
+interface ResourceCounts {
+  ready: number
+  processing: number
+  failed: number
+  other: number
+  total: number
 }
 
 function iso(v: Date | null): string | null {
@@ -127,6 +135,35 @@ async function softDeleteResource(Db: Pool, Id: string): Promise<boolean> {
   } finally {
     client.release()
   }
+}
+
+// 资源状态计数：已软删的不算；未知枚举归 other，与状态分布卡同一口径。
+async function resourceCounts(Db: Pool): Promise<ResourceCounts> {
+  const { rows } = await Db.query(
+    `SELECT status, COUNT(*)::int AS count
+       FROM resources
+      WHERE deleted_at IS NULL
+      GROUP BY status`,
+  )
+  const Counts: ResourceCounts = { ready: 0, processing: 0, failed: 0, other: 0, total: 0 }
+  for (const Row of rows) {
+    const Count = Number(Row.count)
+    Counts.total += Count
+    switch (String(Row.status)) {
+      case 'ready':
+        Counts.ready += Count
+        break
+      case 'processing':
+        Counts.processing += Count
+        break
+      case 'failed':
+        Counts.failed += Count
+        break
+      default:
+        Counts.other += Count
+    }
+  }
+  return Counts
 }
 
 // 启动清扫：上一次进程被杀掉时留在 processing 的资源，chunks 物理删、行转 failed(入库中断)。

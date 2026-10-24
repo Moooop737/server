@@ -177,17 +177,23 @@ const CustomPaths = {
     get: {
       tags: ['Resources'],
       operationId: 'listResourceChunks',
-      summary: '读取资源分块',
+      summary: '分页读取资源分块（按内容搜索）',
       parameters: [
         { name: 'id', in: 'path', required: true, description: '资源 UUID', schema: { type: 'string', format: 'uuid' } },
+        { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 1000000 } },
+        { name: 'per_page', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } },
+        { name: 'search', in: 'query', description: '按内容字面量匹配（最长 200 字）', schema: { type: 'string', maxLength: 200 } },
       ],
       responses: {
-        200: Ok('该资源的分块', {
+        200: Ok('当前页分块与分页元数据', {
           type: 'object',
-          required: ['chunks'],
-          properties: { chunks: { type: 'array', items: Ref('Chunk') } },
+          required: ['chunks', 'pagination'],
+          properties: {
+            chunks: { type: 'array', items: Ref('Chunk') },
+            pagination: PageSchema,
+          },
         }),
-        400: Err('id 不是 UUID'),
+        400: Err('id 不是 UUID（E_BAD_ID），或分页参数不合法（E_BAD_QUERY）'),
         404: Err('资源不存在或已删除'),
         500: Err('读取分块失败'),
       },
@@ -304,6 +310,28 @@ const CustomPaths = {
       },
     },
   },
+  '/traces/{id}': {
+    get: {
+      tags: ['Traces'],
+      operationId: 'getTraceWithStages',
+      summary: '读取单条 endpoint trace 与阶段',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: 'trace id', schema: { type: 'string' } },
+      ],
+      responses: {
+        200: Ok('trace + stages', {
+          type: 'object',
+          required: ['trace', 'stages'],
+          properties: {
+            trace: Ref('Trace'),
+            stages: { type: 'array', items: Ref('TraceStage') },
+          },
+        }),
+        404: Err('trace 不存在'),
+        500: Err('读取观测失败'),
+      },
+    },
+  },
   '/retrieve': {
     post: {
       tags: ['Retrieve'],
@@ -359,6 +387,39 @@ const CustomPaths = {
 }
 
 const CustomSchemas = {
+  Trace: {
+    type: 'object',
+    required: ['id', 'route', 'started_at', 'status', 'created_at'],
+    properties: {
+      id: { type: 'string' },
+      session_id: { type: ['string', 'null'], format: 'uuid' },
+      resource_id: { type: ['string', 'null'], format: 'uuid' },
+      route: { type: 'string' },
+      http_status: { type: ['integer', 'null'] },
+      started_at: { type: 'string', format: 'date-time' },
+      ended_at: { type: ['string', 'null'], format: 'date-time' },
+      duration_ms: { type: ['integer', 'null'] },
+      status: { type: 'string', enum: ['running', 'ok', 'error', 'cancelled'] },
+      error_code: { type: ['string', 'null'] },
+      langfuse_trace_id: { type: ['string', 'null'] },
+      payloads: { type: ['object', 'null'], additionalProperties: true },
+      created_at: { type: 'string', format: 'date-time' },
+    },
+  },
+  TraceStage: {
+    type: 'object',
+    required: ['id', 'trace_id', 'stage', 'input', 'output', 'duration_ms', 'status', 'created_at'],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      trace_id: { type: 'string' },
+      stage: { type: 'string' },
+      input: { type: 'object', additionalProperties: true },
+      output: { type: 'object', additionalProperties: true },
+      duration_ms: { type: 'integer' },
+      status: { type: 'string', enum: ['ok', 'error'] },
+      created_at: { type: 'string', format: 'date-time' },
+    },
+  },
   Error: {
     type: 'object',
     required: ['code', 'message'],

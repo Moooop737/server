@@ -1,6 +1,6 @@
 /**
  * 入口 / 装配 —— 四张表的 CRUD 由 routes/crud.ts 一处注册（hono-crud 的 ESM 细节关在那里）；
- * 自定义用例路由（resources 写入/分块、sessions messages、retrieve/chat、health）都是 plain Hono，按需挂载；
+ * 自定义用例路由（resources 写入/分块/计数、sessions messages、retrieve/chat、health）都是 plain Hono，按需挂载；
  * Scalar 文档页由 routes/doc.ts 提供：四表 CRUD 自动生成 + 自定义端点手写 OpenAPI。
  * 末尾 cleanUpOnBoot 必须先 await 再 serve；本项目是 type:commonjs，顶层写不了 await，故包一层 IIFE。
  */
@@ -13,6 +13,7 @@ import { RetrieveRoute } from './routes/retrieve'
 import { ChatRoute } from './routes/chat'
 import { SessionsRoute } from './routes/sessions'
 import { ObservabilityRoute } from './routes/observability'
+import { TracesRoute } from './routes/traces'
 import { createCrudRoot, registerAllCrud } from './routes/crud'
 import { createDocRoute } from './routes/doc'
 import { PostgresRepo } from './adapter/contract'
@@ -33,13 +34,14 @@ void (async () => {
     app.use('*', async (c: any, next: any) => { c.set('db', repo.orm); await next() })
     app.use('*', createEndpointTrace(repo))
 
-    await registerAllCrud(app)
     app.route('/resources', container.resolve(ResourcesRoute).build())
+    app.route('/traces', container.resolve(TracesRoute).build())
     app.route('/sessions', container.resolve(SessionsRoute).build())
     app.route('/observability', container.resolve(ObservabilityRoute).build())
     app.route('/health', createHealthRoute(createHealthProbes(config, repo)))
     app.route('/retrieve', container.resolve(RetrieveRoute).build())
     app.route('/chat', container.resolve(ChatRoute).build())
+    await registerAllCrud(app)
     app.route('/doc', createDocRoute(router, `http://${config.host}:${config.port}`))
 
   } catch (err) {

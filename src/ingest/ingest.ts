@@ -13,11 +13,12 @@
 
 import 'reflect-metadata'
 import { embedChunks } from '../adapter/contract'
+import { NoopStageSink, runStage } from '../trace/systemtrace/stage'
 import { logInfo, logError } from '../trace/systemtrace/log'
 
 export { IngestFactory, IngestError }
 
-import type { Recipe, KBData, Ingest, IngestResult, IngestContext, StageRegistry } from './contracts'
+import type { Recipe, KBData, Ingest, IngestResult, IngestContext, StageRegistry, IngestOptions } from './contracts'
 import { InflightRegistry } from './inflight'
 import { container, singleton } from 'tsyringe';
 import { createStageRegistry } from './recipes';
@@ -49,8 +50,9 @@ class IngestFactory {
     const embedding = Recipe.embedding
     const inflight = this.inflight
 
-    const runOne = async (Data: KBData, CallerSignal?: AbortSignal): Promise<IngestResult> => {
+    const runOne = async (Data: KBData, CallerSignal?: AbortSignal, Options?: IngestOptions): Promise<IngestResult> => {
       if (CallerSignal?.aborted) return { resource: null, chunkCount: 0, failure: { code: 'E_CANCELLED', reason: '入库取消' } }
+      const Sink = Options?.sink ?? NoopStageSink
 
       if (Data.url) {
         const dup = await repo.findActiveBySource(Data.url)
@@ -90,10 +92,32 @@ class IngestFactory {
       try {
         inflight.add(resource.id, ctrl)
 
-        await fetcher.run(ctx, Signal)
+        const fetched = await runStage(
+          Sink,
+          'fetch',
+          { url: Data.url ?? null },
+          async () => {
+            await fetcher.run(ctx, Signal)
+            return ctx.fetched ?? { raw: '' }
+          },
+          (Fetched) => ({
+            final_url: Fetched.final_url ?? null,
+            content_type: Fetched.content_type || Data.content_type,
+            content_length: Buffer.byteLength(Fetched.raw, 'utf8'),
+            http_status: Fetched.http_status ?? null,
+          }),
+        )
         if (Signal.aborted) return await cancelled() // parse/chunk 是同步的，过了这个点就再也观测不到取消，直到它们跑完
-        parser.run(ctx)
-        const parsed = ctx.parsed
+        const parsed = await runStage(
+          Sink,
+          'parse',
+          { content_type: fetched.content_type || Data.content_type, content_length: Buffer.byteLength(fetched.raw, 'utf8') },
+          async () => {
+            parser.run(ctx)
+            return ctx.parsed
+          },
+          (Parsed) => ({ title: Parsed?.title ?? '', markdown_length: Parsed?.text.length ?? 0 }),
+        )
         if (!parsed || parsed.text.trim() === '') return await fail('解析后无正文')
 
         if (!givenTitle && parsed.title && parsed.title !== resource.title) {
@@ -101,14 +125,28 @@ class IngestFactory {
           resource.title = parsed.title
         }
 
-        chunker.run(ctx)
-        const plans = ctx.chunks ?? []
+        const plans = await runStage(
+          Sink,
+          'chunk',
+          { markdown_length: parsed.text.length },
+          async () => {
+            chunker.run(ctx)
+            return ctx.chunks ?? []
+          },
+          (Chunks) => ({ chunk_count: Chunks.length, total_chars: Chunks.reduce((Sum, Chunk) => Sum + Chunk.content.length, 0) }),
+        )
         if (plans.length === 0) return await fail('内容为空')
         if (Signal.aborted) return await cancelled()
 
         let vectors: number[][]
         try {
-          vectors = await embedChunks(plans.map((p) => p.content), embedding, Signal)
+          vectors = await runStage(
+            Sink,
+            'embed',
+            { chunk_count: plans.length, model_id: embedding.modelId, dimensions: embedding.dimensions },
+            () => embedChunks(plans.map((p) => p.content), embedding, Signal),
+            (Embeddings) => ({ embedding_count: Embeddings.length, dimension: Embeddings[0]?.length ?? null }),
+          )
         } catch (err) {
           return await failFrom(err, 'embedding_error')
         }
@@ -116,10 +154,16 @@ class IngestFactory {
         if (Signal.aborted) return await cancelled()
 
         try {
-          const chunkCount = await repo.writeChunksWithEmbeddings(
-            resource.id,
-            plans.map((p) => ({ chunk_index: p.chunk_index, content: p.content, start_offset: p.start_offset, end_offset: p.end_offset })),
-            vectors.map((v) => ({ dimension: v.length, model: embedding.modelId, embedding: v })),
+          const chunkCount = await runStage(
+            Sink,
+            'write',
+            { chunk_count: plans.length },
+            () => repo.writeChunksWithEmbeddings(
+              resource.id,
+              plans.map((p) => ({ chunk_index: p.chunk_index, content: p.content, start_offset: p.start_offset, end_offset: p.end_offset })),
+              vectors.map((v) => ({ dimension: v.length, model: embedding.modelId, embedding: v })),
+            ),
+            (Count) => ({ chunk_count: Count }),
           )
           // 写入不是可中断的：取消若落在 INSERT/UPDATE 期间，事务已提交成 ready，这里必须把那一笔撤回来
           if (Signal.aborted) return await cancelled()
@@ -139,11 +183,11 @@ class IngestFactory {
 
     return {
       run: runOne,
-      batch: async (Data, Signal) => {
+      batch: async (Data, Signal, Options) => {
         const out: IngestResult[] = []
         for (const d of Data) {
           if (Signal?.aborted) break // 未开始的不再建行
-          out.push(await runOne(d, Signal).catch(notStarted))
+          out.push(await runOne(d, Signal, Options).catch(notStarted))
         }
         return out
       },

@@ -12,6 +12,7 @@ export { buildRetrieveTool }
 import { type Tool, tool } from 'ai'
 import { z } from 'zod'
 import { RetrieverError } from '../../../retrieve/retrievers'
+import { getLlmtraceBridge } from '../../../trace/llmtrace/bridge'
 import { logError } from '../../../trace/systemtrace/log'
 
 import type { RetrieveToolInput, RetrieveToolOutput, RetrievedHit } from '../contracts'
@@ -26,7 +27,8 @@ function buildRetrieveTool(Retriever: Retriever): Tool<RetrieveToolInput, Retrie
     }),
     execute: async (Input: RetrieveToolInput) => {
       try {
-        return toOutput(await Retriever.search(Input.prompt, { limit: Input.topK }))
+        const Sink = getLlmtraceBridge()?.createStageSink() ?? undefined
+        return toOutput(await Retriever.search(Input.prompt, { limit: Input.topK, ...(Sink === undefined ? {} : { sink: Sink }) }))
       } catch (err) {
         if (err instanceof RetrieverError) {
           return { hits: [], vectorCount: 0, lexicalCount: 0, error: { code: err.code, message: err.message } }

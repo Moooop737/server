@@ -1,7 +1,7 @@
 /**
  * 端点观测壳 —— 每个业务请求一行 traces：入口写 running，出口补耗时/状态/错误码/payloads，响应头带 X-Trace-Id。
- * 跳过：/health*、/traces*、/doc*，以及没有匹配到 handler 的路径（末条路由是 `/*`，没有模板可记）。
- * route 取 Hono 匹配到的路由模板；hono-crud 的 OpenAPI 路由没有 GET_MATCH_RESULT，退回实际 path 并把 UUID 段归一成 :id。
+ * 跳过：/health*、/traces*、/observability*、/doc*，以及没有匹配到 handler 的路径（末条路由是 `/*`，没有模板可记）。
+ * route 取实际执行的那条路由模板（跳过 ALL 中间件；同形模式并存时取先命中的那条）；hono-crud 的 OpenAPI 路由没有 GET_MATCH_RESULT，退回实际 path 并把 UUID 段归一成 :id。
  * payloads 规则：失败（>=400）request/response 两侧都记；成功只给 POST /sessions、PATCH /sessions/:id、POST /resources 记 request。
  *   POST /resources 只留元数据（url/content_type/title/chunker/content_length），content 正文一律不落。
  *   /chat、/retrieve 永不记 payloads（chat 归 Langfuse，retrieve 归 trace_stages）。
@@ -15,7 +15,7 @@
 export { createEndpointTrace }
 
 import { randomUUID } from 'node:crypto'
-import { routePath } from 'hono/route'
+import { matchedRoutes } from 'hono/route'
 import { logError, runWithTrace } from './log'
 
 import type { MiddlewareHandler } from 'hono'
@@ -33,7 +33,7 @@ const SUCCESS_REQUEST: Record<string, 'full' | 'resource-meta'> = {
   'POST /resources': 'resource-meta',
 }
 const NO_PAYLOADS = new Set(['POST /chat', 'POST /retrieve'])
-const SKIP_PREFIXES = ['/health', '/traces', '/doc']
+const SKIP_PREFIXES = ['/health', '/traces','/trace', '/observability', '/doc']
 
 type RequestBodyMode = 'full' | 'resource-meta'
 
@@ -64,7 +64,9 @@ function createEndpointTrace(Writer: Pick<Repo, 'insertTrace' | 'finishTrace'>):
     // hono-crud 的 OpenAPI 路由没有 GET_MATCH_RESULT；退回实际 path，别把请求打 500
     let Route = c.req.path
     try {
-      Route = routePath(c, -1)
+      const Concrete = matchedRoutes(c).find((R) => R.method !== 'ALL')
+      if (!Concrete) return next()
+      Route = Concrete.path
     } catch {
       Route = c.req.path
     }

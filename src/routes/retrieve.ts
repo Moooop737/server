@@ -12,17 +12,24 @@ import 'reflect-metadata'
 import { Hono } from 'hono'
 import { inject, injectable } from 'tsyringe'
 import { RetrieverError } from '../retrieve/retrievers'
-import { RetrieverHandle } from '../adapter/contract';
+import { PostgresRepo, RetrieverHandle } from '../adapter/contract';
+import { createDbStageSink } from '../trace/systemtrace/stage-sink'
 import { logError } from '../trace/systemtrace/log'
 
 export { RetrieveRoute }
 
+import type { Repo } from '../adapter/contract'
+
 @injectable()
 class RetrieveRoute {
   private readonly handle: RetrieverHandle
+  private readonly repo: Repo
 
-  constructor(@inject(RetrieverHandle) Handle: RetrieverHandle) {
+  constructor(
+    @inject(RetrieverHandle) Handle: RetrieverHandle,
+    @inject(PostgresRepo) Repo: Repo) {
     this.handle = Handle
+    this.repo = Repo
   }
 
   build(): Hono {
@@ -35,7 +42,9 @@ class RetrieveRoute {
       const limit = typeof body.limit === 'number' && Number.isInteger(body.limit) && body.limit > 0 ? body.limit : undefined
 
       try {
-        const result = await this.handle.retriever.search(body.query, limit === undefined ? undefined : { limit })
+        const Sink = createDbStageSink(this.repo)
+        const Options = limit === undefined ? { sink: Sink } : { limit, sink: Sink }
+        const result = await this.handle.retriever.search(body.query, Options)
         return c.json({
           hits: result.hits.map((hit) => ({
             chunkId: hit.chunk.id,

@@ -16,7 +16,10 @@ export type {
   RetrieverDeps, RetrieverRecipe, RetrieverStageRegistry,
   VectorSearcher, LexicalSearcher, Fuser,
   Retriever, RetrievalResult, RetrievedChunk,
+  SearchOptions,
 }
+
+import type { StageSink } from '../trace/systemtrace/stage'
 
 interface RetrieverDeps {
   repo: Repo
@@ -60,5 +63,10 @@ interface RetrievalResult {
 }
 
 interface Retriever {
-  search(Query: string, Options?: { limit?: number }): Promise<RetrievalResult>
+  search(Query: string, Options?: SearchOptions): Promise<RetrievalResult>
+}
+
+interface SearchOptions {
+  limit?: number
+  sink?: StageSink
 }

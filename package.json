@@ -27,6 +27,7 @@
     "@langfuse/vercel-ai-sdk": "^6.0.1",
     "@mozilla/readability": "^0.6.0",
     "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/context-async-hooks": "^2.12.0",
     "@opentelemetry/sdk-trace": "^2.12.0",
     "@scalar/hono-api-reference": "^0.12.13",
     "ai": "^7.0.141",

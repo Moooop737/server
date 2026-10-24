@@ -29,6 +29,11 @@ export class HttpFetcher implements Fetcher {
     if (!res.ok) throw new Error(`抓取失败 HTTP ${res.status}`)
 
     const raw = await res.text()
-    ctx.fetched = { raw }
+    ctx.fetched = {
+      raw,
+      final_url: res.url,
+      content_type: res.headers.get('content-type') ?? '',
+      http_status: res.status,
+    }
   }
 }

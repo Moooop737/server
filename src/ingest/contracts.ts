@@ -1,4 +1,5 @@
 import type { EmbeddingHandle, Repo, Resource } from '../adapter/contract'
+import type { StageSink } from '../trace/systemtrace/stage'
 
 // ── 工厂输入：装配规格（无数据）──
 export interface Recipe {
@@ -19,8 +20,12 @@ export interface KBData {
 
 // ── 工厂输出：可执行对象 ──
 export interface Ingest {
-  run(Data: KBData, Signal?: AbortSignal): Promise<IngestResult>
-  batch(Data: KBData[], Signal?: AbortSignal): Promise<IngestResult[]>
+  run(Data: KBData, Signal?: AbortSignal, Options?: IngestOptions): Promise<IngestResult>
+  batch(Data: KBData[], Signal?: AbortSignal, Options?: IngestOptions): Promise<IngestResult[]>
+}
+
+export interface IngestOptions {
+  sink?: StageSink
 }
 
 export interface IngestResult {
@@ -65,6 +70,9 @@ export interface Fetcher {
 export interface Fetched {
   raw: string
   title?: string
+  final_url?: string
+  content_type?: string
+  http_status?: number
 }
 export interface Parser {
   readonly name: string

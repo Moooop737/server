@@ -9,6 +9,10 @@ export class PassthroughFetcher implements Fetcher {
   readonly name = 'passthrough'
 
   async run(ctx: IngestContext): Promise<void> {
-    ctx.fetched = { raw: ctx.data.content ?? '' }
+    ctx.fetched = {
+      raw: ctx.data.content ?? '',
+      content_type: ctx.data.content_type,
+      ...(ctx.data.url ? { final_url: ctx.data.url } : {}),
+    }
   }
 }

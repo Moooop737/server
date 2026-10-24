@@ -31,7 +31,7 @@
 export {RetrieverHandle, PostgresRepo, EmbeddingHandle, ChatHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, embedChunks }
 export { resources, sessions, messages, traces } from './repo/orm/schema'
 export { listChatSessions, listChatTraces, getChatTrace } from './repo/observability'
-export type { Repo, ChunkCandidate, Resource, Message, TracePayloads, TracePayloadOmitReason, RegistedProviders, RegistedModels }
+export type { Repo, ChunkCandidate, Resource, Message, Trace, TraceStage, TraceStageInput, TracePayloads, TracePayloadOmitReason, RegistedProviders, RegistedModels }
 export type { ChatSessionSummary, ChatTraceSummary } from './repo/observability'
 
 import 'reflect-metadata'
@@ -41,12 +41,12 @@ import { DbHandle } from './connection/db'
 import { createOrm } from './repo/orm/client'
 import {
   createResource, updateResourceStatus, updateResourceTitle, softDeleteResource, markInterruptedAsFailed,
-  getResource, findActiveBySource,
+  getResource, findActiveBySource, resourceCounts,
 } from './repo/resource'
-import { writeChunksWithEmbeddings, deleteChunksByResource, getChunksByResource } from './repo/chunk'
+import { writeChunksWithEmbeddings, deleteChunksByResource, getChunksPage } from './repo/chunk'
 import { dimensionsInStore, vectorCandidates } from './repo/search-vector'
 import { lexicalCandidates } from './repo/search-lexical'
-import { insertTrace, finishTrace, setTraceSession } from './repo/trace'
+import { insertTrace, finishTrace, setTraceSession, setTraceResource, getTrace, insertTraceStage, listTraceStages } from './repo/trace'
 import { listChatSessions, listChatTraces, getChatTrace } from './repo/observability'
 import { getSession } from './repo/session'
 import { createMessage, getMessagesBySession } from './repo/message'
@@ -57,13 +57,13 @@ import { embedChunks } from './model/embed-chunks'
 
 import { AppConfig } from '../config'
 import { logError } from '../trace/systemtrace/log'
-import type { Resource } from './repo/resource'
+import type { Resource, ResourceCounts } from './repo/resource'
 import type { Chunk, Embedding } from './repo/chunk'
 import type { Session } from './repo/session'
 import type { Message } from './repo/message'
 import type { ChatSessionSummary, ChatTraceSummary } from './repo/observability'
 import type { Orm } from './repo/orm/client'
-import type { TraceStart, TraceFinish, TracePayloads, TracePayloadOmitReason } from './repo/trace'
+import type { TraceStart, TraceFinish, TracePayloads, TracePayloadOmitReason, Trace, TraceStage, TraceStageInput } from './repo/trace'
 import type { EmbeddingModelV4, LanguageModelV4, ProviderV4 } from '@ai-sdk/provider';
 import type { Retriever, RetrieverRecipe } from '../retrieve/contracts';
 import { RetrieverFactory } from '../retrieve/retrievers';
@@ -80,6 +80,7 @@ interface Repo {
     Data: Pick<Resource, 'title' | 'source' | 'data_uri' | 'content_type'> & Partial<Pick<Resource, 'status'>>,
   ): Promise<Resource>
   getResource(Id: string): Promise<Resource | null>
+  resourceCounts(): Promise<ResourceCounts>
   updateResourceStatus(Id: string, Status: Resource['status'], Reason?: string): Promise<void>
   updateResourceTitle(Id: string, Title: string): Promise<void>
   findActiveBySource(Url: string): Promise<Resource | null>
@@ -90,7 +91,7 @@ interface Repo {
     Chunks: Pick<Chunk, 'chunk_index' | 'content' | 'start_offset' | 'end_offset'>[],
     Vectors: Pick<Embedding, 'dimension' | 'model' | 'embedding'>[],
   ): Promise<number>
-  getChunksByResource(ResourceId: string): Promise<Chunk[]>
+  getChunksPage(ResourceId: string, Offset: number, Limit: number, Search: string): Promise<{ Items: Chunk[]; TotalCount: number }>
   deleteChunksByResource(ResourceId: string): Promise<void>
 
   getSession(Id: string): Promise<Session | null>
@@ -100,6 +101,10 @@ interface Repo {
   insertTrace(Entry: TraceStart): Promise<void>
   finishTrace(TraceId: string, Finish: TraceFinish): Promise<void>
   setTraceSession(TraceId: string, SessionId: string): Promise<void>
+  setTraceResource(TraceId: string, ResourceId: string): Promise<void>
+  getTrace(TraceId: string): Promise<Trace | null>
+  insertTraceStage(TraceId: string, Stage: TraceStageInput): Promise<void>
+  listTraceStages(TraceId: string): Promise<TraceStage[]>
 
   listChatSessions(Offset: number, Limit: number): Promise<{ Items: ChatSessionSummary[]; TotalCount: number }>
   listChatTraces(SessionId: string | null, Offset: number, Limit: number): Promise<{ Items: ChatTraceSummary[]; TotalCount: number }>
@@ -187,6 +192,10 @@ class PostgresRepo implements Repo {
     return getResource(this.orm, Id)
   }
 
+  resourceCounts() {
+    return resourceCounts(this.db)
+  }
+
   updateResourceStatus(Id: string, Status: Resource['status'], Reason?: string) {
     return updateResourceStatus(this.db, Id, Status, Reason)
   }
@@ -211,8 +220,8 @@ class PostgresRepo implements Repo {
     return writeChunksWithEmbeddings(this.db, ResourceId, Chunks, Vectors)
   }
 
-  getChunksByResource(ResourceId: string) {
-    return getChunksByResource(this.db, ResourceId)
+  getChunksPage(ResourceId: string, Offset: number, Limit: number, Search: string) {
+    return getChunksPage(this.db, ResourceId, Offset, Limit, Search)
   }
 
   deleteChunksByResource(ResourceId: string) {
@@ -241,6 +250,22 @@ class PostgresRepo implements Repo {
 
   setTraceSession(TraceId: string, SessionId: string) {
     return setTraceSession(this.db, TraceId, SessionId)
+  }
+
+  setTraceResource(TraceId: string, ResourceId: string) {
+    return setTraceResource(this.db, TraceId, ResourceId)
+  }
+
+  getTrace(TraceId: string) {
+    return getTrace(this.db, TraceId)
+  }
+
+  insertTraceStage(TraceId: string, Stage: TraceStageInput) {
+    return insertTraceStage(this.db, TraceId, Stage)
+  }
+
+  listTraceStages(TraceId: string) {
+    return listTraceStages(this.db, TraceId)
   }
 
   listChatSessions(Offset: number, Limit: number) {

@@ -4,8 +4,8 @@
  * number[] ↔ halfvec 字面量字符串的转换住本层（vecToHalfvecStr），不外漏；Embedding 只有写侧。
  */
 
-export { getChunksByResource, writeChunksWithEmbeddings, deleteChunksByResource, rowToChunk }
-export type { Chunk, Embedding }
+export { getChunksPage, writeChunksWithEmbeddings, deleteChunksByResource, rowToChunk }
+export type { Chunk, ChunkPage, Embedding }
 
 import type { Pool } from 'pg'
 import { logError } from '../../trace/systemtrace/log'
@@ -24,6 +24,11 @@ interface Chunk extends timestamp {
   content: string
   start_offset: number | null
   end_offset: number | null
+}
+
+interface ChunkPage {
+  Items: Chunk[]
+  TotalCount: number
 }
 
 interface Embedding extends timestamp {
@@ -54,12 +59,20 @@ function rowToChunk(r: any): Chunk {
   }
 }
 
-async function getChunksByResource(Db: Pool, ResourceId: string): Promise<Chunk[]> {
+async function getChunksPage(Db: Pool, ResourceId: string, Offset: number, Limit: number, Search: string): Promise<ChunkPage> {
+  const Params: unknown[] = [ResourceId]
+  let Where = 'resource_id = $1 AND deleted_at IS NULL'
+  if (Search !== '') {
+    Params.push(Search)
+    /* strpos 是字面量匹配：不像 ILIKE 让用户输入的 % / _ 变成通配符 */
+    Where += ` AND strpos(lower(content), lower($${Params.length})) > 0`
+  }
   const { rows } = await Db.query(
-    `SELECT * FROM chunks WHERE resource_id = $1 AND deleted_at IS NULL ORDER BY chunk_index`,
-    [ResourceId],
+    `SELECT * FROM chunks WHERE ${Where} ORDER BY chunk_index, id LIMIT $${Params.length + 1} OFFSET $${Params.length + 2}`,
+    [...Params, Limit, Offset],
   )
-  return rows.map(rowToChunk)
+  const Count = await Db.query(`SELECT COUNT(*)::int AS total FROM chunks WHERE ${Where}`, Params)
+  return { Items: rows.map(rowToChunk), TotalCount: Number(Count.rows[0]?.total ?? 0) }
 }
 
 async function writeChunksWithEmbeddings(

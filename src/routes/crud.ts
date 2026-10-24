@@ -99,7 +99,6 @@ const Tables: TableEntry[] = [
           defaults: ['id', 'session_id', 'resource_id', 'route', 'http_status', 'started_at', 'ended_at', 'duration_ms', 'status', 'error_code', 'langfuse_trace_id', 'created_at'],
         },
       },
-      read: {},
       create: {},
       update: {},
       delete: {},

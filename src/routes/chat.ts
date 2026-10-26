@@ -4,7 +4,7 @@
  * 检索发生在工具里（agent/tool/retrieve.ts），由模型自己决定调不调、检索什么词、要几条；本路由因此不装配 Retriever，
  *   也没有维度相关的状态码：工具一执行就在 SSE 首帧之后，状态码是一次性的，库中混维只能作为工具的结构化 error 交给模型。
  * 失败映射：body 缺 query/sessionId 或类型不对→400 E_BAD_BODY；query trim 后为空→400 E_EMPTY_QUERY；sessionId 非 UUID→400 E_BAD_ID；
- *   会话不存在或已软删→404 E_SESSION_NOT_FOUND；未预期→500 E_CHAT；流内错误交给 onError 记一行 E_CHAT_STREAM，客户端只收固定文案。
+ *   会话不存在或已软删→404 E_SESSION_NOT_FOUND；未预期→500 E_CHAT；流内错误按类型记 E_CHAT_PROVIDER / E_CHAT_PARSE / E_CHAT_STREAM，客户端只收固定文案。
  * 与 /retrieve 的分工：那边只回原始融合结果、供单独验检索；这边的命中由模型经工具自取。
  */
 

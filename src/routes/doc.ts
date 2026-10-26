@@ -550,15 +550,25 @@ const CustomSchemas = {
   },
   HealthResponse: {
     type: 'object',
-    required: ['status', 'checks'],
+    required: ['status', 'services'],
     properties: {
       status: { type: 'string', enum: ['ok', 'degraded'] },
-      checks: {
+      services: {
         type: 'object',
         additionalProperties: {
           type: 'object',
-          required: ['ok'],
-          properties: { ok: { type: 'boolean' }, detail: {} },
+          required: ['ok', 'checks'],
+          properties: {
+            ok: { type: 'boolean' },
+            checks: {
+              type: 'object',
+              additionalProperties: {
+                type: 'object',
+                required: ['ok'],
+                properties: { ok: { type: 'boolean' }, detail: {} },
+              },
+            },
+          },
         },
       },
     },

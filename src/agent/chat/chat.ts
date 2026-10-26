@@ -54,87 +54,95 @@ class ChatService {
       }
     }
 
-    const Stored = await this.repo.getMessagesBySession(SessionId)
-    const History = Stored.slice(-HISTORY_MESSAGES).map(storedUiMessage).filter((Message): Message is UIMessage => Message !== null)
-    const UserStored = await this.repo.createMessage({
-      session_id: SessionId,
-      role: 'user',
-      content: Query,
-      parts: [{ type: 'text', text: Query }],
-    })
-    const Messages: UIMessage[] = [
-      ...History,
-      { id: UserStored.id, role: 'user', parts: [{ type: 'text', text: Query }] },
-    ]
-    const ModelMessages = await convertToModelMessages(Messages)
+    try {
+      const Stored = await this.repo.getMessagesBySession(SessionId)
+      const History = Stored.slice(-HISTORY_MESSAGES).map(storedUiMessage).filter((Message): Message is UIMessage => Message !== null)
+      const UserStored = await this.repo.createMessage({
+        session_id: SessionId,
+        role: 'user',
+        content: Query,
+        parts: [{ type: 'text', text: Query }],
+      })
+      const Messages: UIMessage[] = [
+        ...History,
+        { id: UserStored.id, role: 'user', parts: [{ type: 'text', text: Query }] },
+      ]
+      const ModelMessages = await convertToModelMessages(Messages)
 
-    let StreamError: unknown = null
-    const Start = () => streamText({
-      model: this.model,
-      messages: ModelMessages,
-      instructions: INSTRUCTIONS,
-      tools: this.tools,
-      stopWhen: stepCountIs(5),
-      abortSignal: Signal,
-      telemetry: { functionId: CHAT_FUNCTION_ID },
-      onError: ({ error }) => {
-        StreamError = error
-        withTrace(() => logError('E_CHAT_STREAM', String(error)))
-      },
-    })
+      let StreamError: unknown = null
+      const Start = () => streamText({
+        model: this.model,
+        messages: ModelMessages,
+        instructions: INSTRUCTIONS,
+        tools: this.tools,
+        stopWhen: stepCountIs(5),
+        abortSignal: Signal,
+        telemetry: { functionId: CHAT_FUNCTION_ID },
+        onError: ({ error }) => {
+          StreamError = error
+          withTrace(() => logError(chatErrorCode(error), String(error)))
+        },
+      })
 
-    const Result = Start()
+      const Result = Start()
 
-    const Stream = toUIMessageStream({
-      stream: Result.stream,
-      tools: this.tools,
-      originalMessages: Messages,
-      onError: () => '问答失败',
-      /* 中断/取消不落 assistant：半截回答只在界面上标「未完整」，库里留的是一条孤立 user 消息。 */
-      onEnd: (Event) => withTrace(async () => {
-        const { responseMessage, isAborted, isCancelled, outcome } = Event
-        const Status: 'ok' | 'error' | 'cancelled' =
-          isAborted || isCancelled || outcome.status === 'aborted'
-            ? 'cancelled'
-            : outcome.status === 'completed' && StreamError === null
-              ? 'ok'
-              : 'error'
-        const LangfuseTraceId = TraceId === undefined ? undefined : Bridge?.takeChatTraceId(TraceId)
+      const Stream = toUIMessageStream({
+        stream: Result.stream,
+        tools: this.tools,
+        originalMessages: Messages,
+        onError: () => '问答失败',
+        /* 中断/取消不落 assistant：半截回答只在界面上标「未完整」，库里留的是一条孤立 user 消息。 */
+        onEnd: (Event) => withTrace(async () => {
+          const { responseMessage, isAborted, isCancelled, outcome } = Event
+          const Status: 'ok' | 'error' | 'cancelled' =
+            isAborted || isCancelled || outcome.status === 'aborted'
+              ? 'cancelled'
+              : outcome.status === 'completed' && StreamError === null
+                ? 'ok'
+                : 'error'
+          const OutcomeError = outcome.status === 'failed' ? outcome.error : undefined
+          const ErrorCode = Status === 'error' ? chatErrorCode(StreamError ?? OutcomeError) : null
+          const LangfuseTraceId = TraceId === undefined ? undefined : Bridge?.takeChatTraceId(TraceId)
 
-        if (TraceId !== undefined) {
+          if (TraceId !== undefined) {
+            try {
+              await this.repo.finishTrace(TraceId, {
+                ended_at: new Date().toISOString(),
+                duration_ms: Date.now() - StartedMs,
+                http_status: 200,
+                status: Status,
+                error_code: ErrorCode,
+                payloads: null,
+                session_id: SessionId,
+                ...(LangfuseTraceId === undefined ? {} : { langfuse_trace_id: LangfuseTraceId }),
+              })
+            } catch (err) {
+              logError('E_TRACE_WRITE', `流式收口 trace 失败: ${String(err)}`)
+            }
+          }
+
+          if (isAborted || isCancelled) return
+          const Parts = responseMessage.parts
+          const Content = Parts.map((Part) => (Part.type === 'text' ? Part.text : '')).join('')
           try {
-            await this.repo.finishTrace(TraceId, {
-              ended_at: new Date().toISOString(),
-              duration_ms: Date.now() - StartedMs,
-              http_status: 200,
-              status: Status,
-              error_code: Status === 'error' ? 'E_CHAT_STREAM' : null,
-              payloads: null,
+            await this.repo.createMessage({
               session_id: SessionId,
-              ...(LangfuseTraceId === undefined ? {} : { langfuse_trace_id: LangfuseTraceId }),
+              role: 'assistant',
+              content: Content,
+              parts: Parts,
             })
           } catch (err) {
-            logError('E_TRACE_WRITE', `流式收口 trace 失败: ${String(err)}`)
+            logError('E_MESSAGE_SAVE', String(err))
           }
-        }
+        }),
+      })
 
-        if (isAborted || isCancelled) return
-        const Parts = responseMessage.parts
-        const Content = Parts.map((Part) => (Part.type === 'text' ? Part.text : '')).join('')
-        try {
-          await this.repo.createMessage({
-            session_id: SessionId,
-            role: 'assistant',
-            content: Content,
-            parts: Parts,
-          })
-        } catch (err) {
-          logError('E_MESSAGE_SAVE', String(err))
-        }
-      }),
-    })
-
-    return createUIMessageStreamResponse({ stream: Stream })
+      return createUIMessageStreamResponse({ stream: Stream })
+    } catch (err) {
+      // 建流前失败不会有 onEnd：把 beginChat 的登记在这里取走，否则 Chats 永久残留
+      if (TraceId !== undefined) Bridge?.takeChatTraceId(TraceId)
+      throw err
+    }
   }
 }
 
@@ -144,4 +152,11 @@ function storedUiMessage(Message: Message): UIMessage | null {
   const Parts = Message.parts.filter((Part) => Part.type === 'text')
   if (Parts.length === 0) return null
   return { id: Message.id, role: Message.role, parts: Parts }
+}
+
+function chatErrorCode(Err: unknown): string {
+  const Name = Err !== null && typeof Err === 'object' && 'name' in Err ? (Err as { name?: unknown }).name : undefined
+  if (Name === 'AI_APICallError' || Name === 'AI_RetryError') return 'E_CHAT_PROVIDER'
+  if (Name === 'AI_JSONParseError' || Name === 'AI_TypeValidationError' || Name === 'AI_InvalidResponseDataError') return 'E_CHAT_PARSE'
+  return 'E_CHAT_STREAM'
 }

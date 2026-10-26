@@ -57,10 +57,8 @@ function beginChat(Params: ChatTraceParams): void {
 
 function takeChatTraceId(LocalTraceId: string): string | undefined {
   const TraceId = TraceIds.get(LocalTraceId)
-  if (TraceId !== undefined) {
-    TraceIds.delete(LocalTraceId)
-    Chats.delete(LocalTraceId)
-  }
+  TraceIds.delete(LocalTraceId)
+  Chats.delete(LocalTraceId)
   return TraceId
 }
 

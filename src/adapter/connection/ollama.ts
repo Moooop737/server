@@ -10,14 +10,14 @@
 
 export { ollamaHealthCheck, ollamaModelList, ollamaStatusList }
 
-async function ollamaHealthCheck(BaseUrl: string): Promise<boolean> {
+async function ollamaHealthCheck(BaseUrl: string): Promise<string> {
   try {
     const res = await fetch(`${BaseUrl}/api/version`, {
       signal: AbortSignal.timeout(3000),
     })
-    return res.ok
+    return res.text()
   } catch {
-    return false
+    return 'error'
   }
 }
 

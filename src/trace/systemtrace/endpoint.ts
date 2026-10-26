@@ -6,8 +6,8 @@
  *   POST /resources 只留元数据（url/content_type/title/chunker/content_length），content 正文一律不落。
  *   /chat、/retrieve 永不记 payloads（chat 归 Langfuse，retrieve 归 trace_stages）。
  *   body 单侧上限 3KB，超出/非 JSON 只留 omitted 标记；headers 只记白名单，Key/Cookie 等永不落库。
- * 出口：非 SSE 按响应收口，>=400 记 error 并尽量从 JSON 错误体取 code 写 error_code；
- *   SSE 只按「到响应头」收口为 ok，流结束/中断后的最终值由 3.2 覆盖同一行。
+ * 出口：>=400 记 error 并尽量从 JSON 错误体取 code 写 error_code；SSE 的错误体不是 JSON，readResponseBody 会跳过、不消费流。
+ *   SSE 到响应头通常只有 200，先写 ok 占位，流结束/中断后的最终值由 /chat 的 onEnd 覆盖同一行（4xx 建流照常记 error）。
  * trace 写失败不影响业务：只记 E_TRACE_WRITE，不把 500 冒给客户端。
  * 单位：duration_ms 为毫秒整数；时间一律 ISO 8601 字符串。
  */
@@ -107,9 +107,8 @@ async function closeTrace(
   Plan: CapturePlan | null,
 ): Promise<void> {
   const EndedMs = Date.now()
-  const IsSse = Res.headers.get('content-type')?.includes('text/event-stream') ?? false
   const IsFailure = Res.status >= 400
-  const ResponseInfo = !IsSse && IsFailure ? await readResponseBody(Res) : null
+  const ResponseInfo = IsFailure ? await readResponseBody(Res) : null
   const Capture = Plan !== null && (IsFailure || Plan.onSuccess)
   const Payloads = Capture
     ? await buildPayloads(RequestHeaders, Res.headers, RequestClone, Plan.requestBody, IsFailure, ResponseInfo)
@@ -120,7 +119,7 @@ async function closeTrace(
       ended_at: new Date(EndedMs).toISOString(),
       duration_ms: EndedMs - StartedMs,
       http_status: Res.status,
-      status: IsSse || !IsFailure ? 'ok' : 'error',
+      status: IsFailure ? 'error' : 'ok',
       error_code: ResponseInfo?.code ?? null,
       payloads: Payloads,
     })

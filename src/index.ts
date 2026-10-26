@@ -7,7 +7,7 @@
 
 import 'reflect-metadata'
 import { container } from 'tsyringe'
-import { createHealthProbes, createHealthRoute } from './routes/health'
+import { createHealthServices, createHealthRoute } from './routes/health'
 import { ResourcesRoute } from './routes/resources'
 import { RetrieveRoute } from './routes/retrieve'
 import { ChatRoute } from './routes/chat'
@@ -38,7 +38,7 @@ void (async () => {
     app.route('/traces', container.resolve(TracesRoute).build())
     app.route('/sessions', container.resolve(SessionsRoute).build())
     app.route('/observability', container.resolve(ObservabilityRoute).build())
-    app.route('/health', createHealthRoute(createHealthProbes(config, repo)))
+    app.route('/health', createHealthRoute(createHealthServices(config, repo)))
     app.route('/retrieve', container.resolve(RetrieveRoute).build())
     app.route('/chat', container.resolve(ChatRoute).build())
     await registerAllCrud(app)

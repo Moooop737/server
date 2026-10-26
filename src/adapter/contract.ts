@@ -28,11 +28,13 @@
  * 实体形状不再有跨层共享盒（原 `types/` 已删）：别盒要用哪一位，由本门逐个点名交出（现交 Resource 与四张 Drizzle 表）。
  */
 
-export {RetrieverHandle, PostgresRepo, EmbeddingHandle, ChatHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, embedChunks }
+export {RetrieverHandle, PostgresRepo, EmbeddingHandle, ChatHandle, ObjectStoreHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, embedChunks }
 export { resources, sessions, messages, traces } from './repo/orm/schema'
 export { listChatSessions, listChatTraces, getChatTrace } from './repo/observability'
+export { ObjectStoreError } from './storage/object-store'
 export type { Repo, ChunkCandidate, Resource, Message, Trace, TraceStage, TraceStageInput, TracePayloads, TracePayloadOmitReason, RegistedProviders, RegistedModels }
 export type { ChatSessionSummary, ChatTraceSummary } from './repo/observability'
+export type { ObjectStore, ObjectStat, ObjectBody, ObjectGetOptions, ObjectPresignOptions, ObjectPresignPutOptions } from './storage/object-store'
 
 import 'reflect-metadata'
 import { inject, singleton } from 'tsyringe'
@@ -54,6 +56,8 @@ import { ollamaHealthCheck, ollamaModelList, ollamaStatusList } from './connecti
 import { type ProviderEntryName } from './provider/registry'
 import { ModelRegistry, type EmbeddingModelId, type LanguageModelId } from './model/registry'
 import { embedChunks } from './model/embed-chunks'
+import { createS3Client, putObject, statObject, getObject, deleteObject, presignGet, presignPut, pingBucket, ensureBucket } from './storage/s3'
+import type { ObjectStore, ObjectGetOptions, ObjectPresignOptions, ObjectPresignPutOptions } from './storage/object-store'
 
 import { AppConfig } from '../config'
 import { logError } from '../trace/systemtrace/log'
@@ -278,6 +282,55 @@ class PostgresRepo implements Repo {
 
   getChatTrace(TraceId: string) {
     return getChatTrace(this.db, TraceId)
+  }
+}
+
+@singleton()
+class ObjectStoreHandle implements ObjectStore {
+  private readonly client: ReturnType<typeof createS3Client>
+  private readonly bucket: string
+
+  constructor(@inject(AppConfig) Config: AppConfig) {
+    this.client = createS3Client({
+      endpoint: Config.s3Endpoint,
+      region: Config.s3Region,
+      forcePathStyle: Config.s3ForcePathStyle,
+      accessKeyId: Config.s3AccessKeyId,
+      secretAccessKey: Config.s3SecretAccessKey,
+    })
+    this.bucket = Config.s3Bucket
+  }
+
+  put(Key: string, Body: Uint8Array, ContentType: string) {
+    return putObject(this.client, this.bucket, Key, Body, ContentType)
+  }
+
+  stat(Key: string) {
+    return statObject(this.client, this.bucket, Key)
+  }
+
+  get(Key: string, Options?: ObjectGetOptions) {
+    return getObject(this.client, this.bucket, Key, Options)
+  }
+
+  delete(Key: string) {
+    return deleteObject(this.client, this.bucket, Key)
+  }
+
+  presignGet(Key: string, Options: ObjectPresignOptions) {
+    return presignGet(this.client, this.bucket, Key, Options)
+  }
+
+  presignPut(Key: string, Options: ObjectPresignPutOptions) {
+    return presignPut(this.client, this.bucket, Key, Options)
+  }
+
+  ping() {
+    return pingBucket(this.client, this.bucket)
+  }
+
+  ensureBucket() {
+    return ensureBucket(this.client, this.bucket)
   }
 }
 

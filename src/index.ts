@@ -16,11 +16,11 @@ import { ObservabilityRoute } from './routes/observability'
 import { TracesRoute } from './routes/traces'
 import { createCrudRoot, registerAllCrud } from './routes/crud'
 import { createDocRoute } from './routes/doc'
-import { PostgresRepo } from './adapter/contract'
+import { ObjectStoreHandle, PostgresRepo } from './adapter/contract'
 import { AppConfig, cleanUpOnBoot } from './config'
 import { serve } from '@hono/node-server'
 import { createEndpointTrace } from './trace/systemtrace/endpoint'
-import { logInfo, logError } from './trace/systemtrace/log'
+import { logInfo, logWarn, logError } from './trace/systemtrace/log'
 import { setupLangfuse } from './trace/llmtrace/langfuse'
 
 setupLangfuse()
@@ -28,6 +28,7 @@ setupLangfuse()
 void (async () => {
   const repo = container.resolve(PostgresRepo)
   const config = container.resolve(AppConfig)
+  const store = container.resolve(ObjectStoreHandle)
   const { app, router } = await createCrudRoot();
 
   try {
@@ -38,7 +39,7 @@ void (async () => {
     app.route('/traces', container.resolve(TracesRoute).build())
     app.route('/sessions', container.resolve(SessionsRoute).build())
     app.route('/observability', container.resolve(ObservabilityRoute).build())
-    app.route('/health', createHealthRoute(createHealthServices(config, repo)))
+    app.route('/health', createHealthRoute(createHealthServices(config, repo, store)))
     app.route('/retrieve', container.resolve(RetrieveRoute).build())
     app.route('/chat', container.resolve(ChatRoute).build())
     await registerAllCrud(app)
@@ -50,6 +51,12 @@ void (async () => {
   }
 
   await cleanUpOnBoot(repo, config)
+  try {
+    await store.ensureBucket()
+    logInfo('I_OBJECT_STORE', `对象存储就绪：${config.s3Bucket}`)
+  } catch (err) {
+    logWarn('W_OBJECT_STORE', `对象存储检查失败，服务继续启动：${String(err)}`)
+  }
   serve({
     fetch: app.fetch,
     hostname: config.host,

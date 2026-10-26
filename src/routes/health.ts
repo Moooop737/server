@@ -13,7 +13,7 @@ export { createHealthRoute, createHealthServices }
 export type { HealthCheck, HealthService, ProbeResult }
 
 import type { AppConfig } from '../config'
-import type { Repo } from '../adapter/contract'
+import type { ObjectStore, Repo } from '../adapter/contract'
 import { json, map } from 'zod';
 
 interface ProbeResult {
@@ -42,7 +42,7 @@ interface CachedResponse {
   body: { status: 'ok' | 'degraded'; services: Record<string, ServiceResult> }
 }
 
-function createHealthServices(Config: AppConfig, Repo: Repo): HealthService[] {
+function createHealthServices(Config: AppConfig, Repo: Repo, Store: ObjectStore): HealthService[] {
   const base = Config.ollamaBaseUrl
   const emb = Config.embeddingModel
 
@@ -87,6 +87,18 @@ function createHealthServices(Config: AppConfig, Repo: Repo): HealthService[] {
               ok: true,
               detail: ps.map((m) => ({ name: m.name, expires_at: m.expires_at, size_vram: m.size_vram })),
             }
+          },
+        },
+      ],
+    },
+    {
+      name: 's3',
+      checks: [
+        {
+          name: 'bucket',
+          ping: async () => {
+            await Store.ping()
+            return { ok: true }
           },
         },
       ],

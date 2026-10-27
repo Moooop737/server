@@ -30,6 +30,7 @@ interface ObjectPresignOptions {
   expiresIn: number
   responseContentDisposition?: string
   responseContentType?: string
+  responseCacheControl?: string
 }
 
 interface ObjectPresignPutOptions {

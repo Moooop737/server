@@ -115,6 +115,9 @@ async function presignGet(
   if (Options.responseContentType !== undefined) {
     input.ResponseContentType = Options.responseContentType
   }
+  if (Options.responseCacheControl !== undefined) {
+    input.ResponseCacheControl = Options.responseCacheControl
+  }
   try {
     return await getSignedUrl(Client, new GetObjectCommand(input), { expiresIn: Options.expiresIn })
   } catch (err) {

@@ -9,6 +9,7 @@ import 'reflect-metadata'
 import { container } from 'tsyringe'
 import { createHealthServices, createHealthRoute } from './routes/health'
 import { ResourcesRoute } from './routes/resources'
+import { CodebasesRoute } from './routes/codebases'
 import { RetrieveRoute } from './routes/retrieve'
 import { ChatRoute } from './routes/chat'
 import { SessionsRoute } from './routes/sessions'
@@ -16,7 +17,7 @@ import { ObservabilityRoute } from './routes/observability'
 import { TracesRoute } from './routes/traces'
 import { createCrudRoot, registerAllCrud } from './routes/crud'
 import { createDocRoute } from './routes/doc'
-import { ObjectStoreHandle, PostgresRepo } from './adapter/contract'
+import { ObjectStoreHandle, PostgresCodebaseRepo, PostgresRepo } from './adapter/contract'
 import { AppConfig, cleanUpOnBoot } from './config'
 import { serve } from '@hono/node-server'
 import { createEndpointTrace } from './trace/systemtrace/endpoint'
@@ -36,6 +37,7 @@ void (async () => {
     app.use('*', createEndpointTrace(repo))
 
     app.route('/resources', container.resolve(ResourcesRoute).build())
+    app.route('/codebases', container.resolve(CodebasesRoute).build())
     app.route('/traces', container.resolve(TracesRoute).build())
     app.route('/sessions', container.resolve(SessionsRoute).build())
     app.route('/observability', container.resolve(ObservabilityRoute).build())
@@ -50,7 +52,7 @@ void (async () => {
     process.exit(1)
   }
 
-  await cleanUpOnBoot(repo, config)
+  await cleanUpOnBoot(repo, container.resolve(PostgresCodebaseRepo), config)
   try {
     await store.ensureBucket()
     logInfo('I_OBJECT_STORE', `对象存储就绪：${config.s3Bucket}`)

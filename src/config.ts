@@ -10,7 +10,7 @@
 
 import 'reflect-metadata'
 import { singleton } from 'tsyringe'
-import type { Repo } from './adapter/contract';
+import type { CodebaseRepo, Repo } from './adapter/contract';
 import { logInfo, logWarn, logError } from './trace/systemtrace/log'
 
 export { AppConfig, getEnv, cleanUpOnBoot }
@@ -76,14 +76,23 @@ class AppConfig {
   }
 }
 
-async function cleanUpOnBoot(repo: Repo, config: AppConfig) {
+async function cleanUpOnBoot(repo: Repo, codebases: CodebaseRepo, config: AppConfig) {
   try {
-    const cleaned = await repo.markInterruptedAsFailed()
-    if (cleaned.resources > 0) {
-      logInfo('I_BOOT_CLEANUP', `启动清扫：${cleaned.resources} 条 processing 资源转为 failed(入库中断)`)
+    const cleaned = await repo.markStaleOnBoot()
+    if (cleaned.resources > 0 || cleaned.uploads > 0) {
+      logInfo('I_BOOT_CLEANUP', `启动清扫：${cleaned.resources} 条 processing→process_failed，${cleaned.uploads} 条 uploading→upload_failed`)
     }
   } catch (err) {
     logError('E_CLEANUP', String(err))
+  }
+
+  try {
+    const cleaned = await codebases.markStaleCodebases()
+    if (cleaned.processing > 0 || cleaned.uploads > 0) {
+      logInfo('I_CODEBASE_CLEANUP', `启动清扫：${cleaned.processing} 条 codebase processing→failed，${cleaned.uploads} 条 uploading→failed`)
+    }
+  } catch (err) {
+    logError('E_CODEBASE_CLEANUP', String(err))
   }
 
   try {

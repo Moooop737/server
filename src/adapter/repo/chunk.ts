@@ -1,6 +1,7 @@
 /**
  * chunk + embedding —— 按资源读 chunks、删 chunks、chunk/向量/行转 ready 的同事务写入。
  * 事务是这块的唯一边界：要么全写、要么全滚，既杜绝「有 chunk 无向量」，也杜绝「向量已落、行还 processing」。
+ * 重入库时同一事务先删该资源旧 chunks（embeddings 随 FK），再插新；中途失败旧数据随事务回滚。
  * number[] ↔ halfvec 字面量字符串的转换住本层（vecToHalfvecStr），不外漏；Embedding 只有写侧。
  */
 
@@ -86,12 +87,16 @@ async function writeChunksWithEmbeddings(
   try {
     await client.query('BEGIN')
 
+    // FOR UPDATE 串行化同一资源的并发写入/重入库：否则两个事务会各自删旧插新，留下两份 chunks
     const { rows: [res] } = await client.query(
-      `SELECT data_uri FROM resources WHERE id = $1 AND deleted_at IS NULL`,
+      `SELECT data_uri FROM resources WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
       [ResourceId],
     )
     if (!res) throw Object.assign(new Error(`资源行不存在或已删除，写入中止: ${ResourceId}`), { code: 'E_RESOURCE_GONE' })
     const resourceUri = res.data_uri as string
+
+    // 重入库覆盖：同一事务先删旧 chunks（embeddings 随 FK CASCADE），再插新；失败整体回滚
+    await client.query(`DELETE FROM chunks WHERE resource_id = $1`, [ResourceId])
 
     const cValues: string[] = []
     const cParams: unknown[] = []

@@ -9,7 +9,7 @@ export class TextParser implements Parser {
   readonly name = 'text'
 
   run(ctx: IngestContext): void {
-    const raw = ctx.data.content ?? ''
+    const raw = ctx.data.content ?? ctx.fetched?.raw ?? ''
     const title = ctx.data.title?.trim() || deriveTitle(raw)
     ctx.parsed = { title, text: raw }
   }

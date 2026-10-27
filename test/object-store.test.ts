@@ -9,9 +9,9 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { container } from 'tsyringe'
 import { DeleteBucketCommand } from '@aws-sdk/client-s3'
 import type { Readable } from 'node:stream'
-import { ObjectStoreError, ObjectStoreHandle } from '../contract'
-import { createS3Client, ensureBucket } from './s3'
-import { AppConfig } from '../../config'
+import { ObjectStoreError, ObjectStoreHandle } from '../src/adapter/contract'
+import { createS3Client, ensureBucket } from '../src/adapter/storage/s3'
+import { AppConfig } from '../src/config'
 
 const Store = container.resolve(ObjectStoreHandle)
 const Config = container.resolve(AppConfig)

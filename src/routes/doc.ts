@@ -20,6 +20,7 @@ const Info = {
 
 const Tags = [
   { name: 'Resources', description: '资源' },
+  { name: 'Codebases', description: '代码库 ZIP：独立领域，不进资源/ingest/检索' },
   { name: 'Sessions', description: '会话' },
   { name: 'Messages', description: '消息' },
   { name: 'Traces', description: '端点观测 trace；payloads 只在失败/白名单成功时记录，列表不返回' },
@@ -128,15 +129,49 @@ const CustomPaths = {
   '/resources': {
     post: {
       tags: ['Resources'],
-      operationId: 'ingestResource',
-      summary: '入库 URL 或粘贴文本',
-      requestBody: { required: true, content: Json(Ref('IngestRequest')) },
+      operationId: 'createResource',
+      summary: '归档 URL/粘贴文本，或返回文件 presign PUT 目标',
+      requestBody: { required: true, content: Json(Ref('CreateResourceRequest')) },
       responses: {
-        201: Ok('入库成功', Ref('IngestSuccess')),
-        400: Err('body、url、content_type 或策略名不合法'),
-        409: Err('同 URL 已有 ready/processing 资源'),
-        422: Ok('建行后入库失败，resource 留痕为 failed', Ref('IngestFailed')),
-        500: Err('入库失败'),
+        200: Ok('同内容命中：duplicate=库里有，restored=软删恢复；都不带 upload', {
+          type: 'object',
+          required: ['resource'],
+          properties: {
+            resource: Ref('Resource'),
+            duplicate: { type: 'boolean' },
+            restored: { type: 'boolean' },
+          },
+        }),
+        201: Ok('文件返回上传目标；URL/粘贴返回 uploaded 资源', { oneOf: [Ref('ResourceCreated'), Ref('FileUploadCreated')] }),
+        400: Err('url/content/filename、content_type、size 或路径不合法'),
+        409: Ok('同 URL 已有未删除资源', Ref('ResourceFailed')),
+        413: Err('文件声明大小超过上限'),
+        422: Ok('建行后归档失败，resource 留痕为 upload_failed', Ref('ResourceFailed')),
+        500: Err('归档失败'),
+      },
+    },
+  },
+  '/resources/deleted': {
+    get: {
+      tags: ['Resources'],
+      operationId: 'listDeletedResources',
+      summary: '回收站：分页读取软删资源',
+      parameters: [
+        { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 1000000 } },
+        { name: 'per_page', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } },
+        { name: 'search', in: 'query', description: '按标题 / 来源搜索（最长 200 字）', schema: { type: 'string', maxLength: 200 } },
+      ],
+      responses: {
+        200: Ok('软删资源与分页元数据', {
+          type: 'object',
+          required: ['resources', 'pagination'],
+          properties: {
+            resources: { type: 'array', items: Ref('Resource') },
+            pagination: PageSchema,
+          },
+        }),
+        400: Err('分页参数不合法'),
+        500: Err('读取回收站失败'),
       },
     },
   },
@@ -173,6 +208,99 @@ const CustomPaths = {
       },
     },
   },
+  '/resources/{id}/confirm-upload': {
+    post: {
+      tags: ['Resources'],
+      operationId: 'confirmResourceUpload',
+      summary: '文件 PUT 后 stat/类型/大小门禁，转 uploaded（不解析正文）',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: '资源 UUID', schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        200: Ok('已确认上传，status=uploaded', Ref('ResourceCreated')),
+        400: Err('id 不是 UUID'),
+        404: Err('资源不存在或已删除'),
+        409: Ok('资源正在处理/已就绪，或原始对象状态冲突', Ref('ResourceFailed')),
+        422: Ok('对象缺失/为空/过大/类型不符，resource 留痕 upload_failed', Ref('ResourceFailed')),
+        500: Err('确认上传失败'),
+      },
+    },
+  },
+  '/resources/{id}/ingest': {
+    post: {
+      tags: ['Resources'],
+      operationId: 'ingestResource',
+      summary: '对已归档资源做解析、切块、embedding；ready 可重跑并替换旧分块',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: '资源 UUID', schema: { type: 'string', format: 'uuid' } },
+      ],
+      requestBody: { required: false, content: Json(Ref('IngestRequest')) },
+      responses: {
+        201: Ok('入库成功', Ref('IngestSuccess')),
+        400: Err('id 不是 UUID、body 或 chunker 不合法'),
+        404: Err('资源不存在或已删除'),
+        409: Ok('资源正在处理，或原始对象状态冲突', Ref('ResourceFailed')),
+        422: Ok('上传门禁失败或处理失败，resource 留痕', Ref('ResourceFailed')),
+        500: Err('入库失败'),
+      },
+    },
+  },
+  '/resources/{id}/restore': {
+    post: {
+      tags: ['Resources'],
+      operationId: 'restoreResource',
+      summary: '恢复软删资源到 uploaded',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: '资源 UUID', schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        200: Ok('已恢复到 uploaded，等待再次 ingest', Ref('ResourceCreated')),
+        400: Err('id 不是 UUID'),
+        404: Err('资源不存在'),
+        409: Ok('资源未删除，或原始文件不存在', Ref('ResourceFailed')),
+        500: Err('恢复失败'),
+      },
+    },
+  },
+  '/resources/{id}/purge': {
+    delete: {
+      tags: ['Resources'],
+      operationId: 'purgeResource',
+      summary: '彻底删除回收站资源（先删原始对象，再删行并释放 content_hash）',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: '资源 UUID', schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        204: { description: '已彻底删除' },
+        400: Err('id 不是 UUID'),
+        404: Err('资源不存在'),
+        409: Err('资源未在回收站（仅允许删除软删行）'),
+        500: Err('删除原始对象失败，资源行保留'),
+      },
+    },
+  },
+  '/resources/{id}/original': {
+    get: {
+      tags: ['Resources'],
+      operationId: 'downloadResourceOriginal',
+      summary: '302 到原始文件 presigned GET',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: '资源 UUID', schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        302: {
+          description: '重定向到 MinIO presigned GET（attachment + no-store）',
+          headers: {
+            Location: { schema: { type: 'string', format: 'uri' } },
+            'Cache-Control': { schema: { type: 'string' } },
+          },
+        },
+        400: Err('id 不是 UUID'),
+        404: Err('资源不存在、原始文件不存在或不是 kc:// URI'),
+        500: Err('生成下载地址失败'),
+      },
+    },
+  },
   '/resources/{id}/chunks': {
     get: {
       tags: ['Resources'],
@@ -196,6 +324,181 @@ const CustomPaths = {
         400: Err('id 不是 UUID（E_BAD_ID），或分页参数不合法（E_BAD_QUERY）'),
         404: Err('资源不存在或已删除'),
         500: Err('读取分块失败'),
+      },
+    },
+  },
+  '/codebases': {
+    get: {
+      tags: ['Codebases'],
+      operationId: 'listCodebases',
+      summary: '分页读取代码库（不含 manifest）',
+      parameters: [
+        { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 1000000 } },
+        { name: 'per_page', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } },
+        { name: 'search', in: 'query', description: '按标题 / 原始文件名搜索', schema: { type: 'string', maxLength: 200 } },
+      ],
+      responses: {
+        200: Ok('代码库列表与分页', {
+          type: 'object',
+          required: ['codebases', 'pagination'],
+          properties: {
+            codebases: { type: 'array', items: Ref('Codebase') },
+            pagination: PageSchema,
+          },
+        }),
+        400: Err('分页参数不合法'),
+        500: Err('读取代码库列表失败'),
+      },
+    },
+    post: {
+      tags: ['Codebases'],
+      operationId: 'createCodebase',
+      summary: '建 uploading 行并返回 ZIP presign PUT 目标',
+      requestBody: {
+        required: true,
+        content: Json({
+          type: 'object',
+          required: ['filename'],
+          properties: {
+            filename: { type: 'string', description: '只支持 .zip；不能包含路径' },
+            size: { type: 'integer', minimum: 0, maximum: 104857600 },
+            title: { type: 'string' },
+          },
+        }),
+      },
+      responses: {
+        201: Ok('代码库行与上传目标', Ref('CodebaseUploadCreated')),
+        400: Err('filename/size/title 不合法'),
+        413: Err('声明大小超过 100MB'),
+        500: Err('创建上传目标失败'),
+      },
+    },
+  },
+  '/codebases/{id}': {
+    get: {
+      tags: ['Codebases'],
+      operationId: 'readCodebase',
+      summary: '读取代码库元数据（不含 manifest）',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: '代码库 UUID', schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        200: Ok('代码库元数据', { type: 'object', required: ['codebase'], properties: { codebase: Ref('Codebase') } }),
+        400: Err('id 不是 UUID'),
+        404: Err('代码库不存在'),
+        500: Err('读取代码库失败'),
+      },
+    },
+    delete: {
+      tags: ['Codebases'],
+      operationId: 'deleteCodebase',
+      summary: '硬删代码库（先删 MinIO 原 ZIP，再删行）',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: '代码库 UUID', schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        204: { description: '已删除' },
+        400: Err('id 不是 UUID'),
+        404: Err('代码库不存在'),
+        409: Err('代码库正在校验，不能删除'),
+        500: Err('删除对象失败，行保留'),
+      },
+    },
+  },
+  '/codebases/{id}/complete': {
+    post: {
+      tags: ['Codebases'],
+      operationId: 'completeCodebase',
+      summary: '完成上传：stat、读 ZIP 中央目录、写 manifest 或转 failed',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: '代码库 UUID', schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        200: Ok('校验完成，status=ready', { type: 'object', required: ['codebase'], properties: { codebase: Ref('Codebase') } }),
+        400: Err('id 不是 UUID'),
+        404: Err('代码库不存在'),
+        409: Err('代码库不是 uploading'),
+        422: Ok('上传/ ZIP 校验失败，codebase 留痕 failed', {
+          type: 'object',
+          required: ['code', 'message'],
+          properties: { code: { type: 'string' }, message: { type: 'string' }, codebase: Ref('Codebase') },
+        }),
+        500: Err('读取 ZIP 或生成上传目标失败'),
+      },
+    },
+  },
+  '/codebases/{id}/tree': {
+    get: {
+      tags: ['Codebases'],
+      operationId: 'readCodebaseTree',
+      summary: '读取扁平文件清单（树由前端合成）',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: '代码库 UUID', schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        200: Ok('扁平条目清单', {
+          type: 'object',
+          required: ['entries'],
+          properties: { entries: { type: 'array', items: Ref('CodebaseEntry') } },
+        }),
+        400: Err('id 不是 UUID'),
+        404: Err('代码库不存在'),
+        409: Err('代码库还不是 ready'),
+        500: Err('读取文件树失败'),
+      },
+    },
+  },
+  '/codebases/{id}/files/{entryIndex}': {
+    get: {
+      tags: ['Codebases'],
+      operationId: 'readCodebaseFile',
+      summary: '按 entryIndex 流式读取单个条目；默认 inline，?download=1 下载',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: '代码库 UUID', schema: { type: 'string', format: 'uuid' } },
+        { name: 'entryIndex', in: 'path', required: true, description: 'manifest 里的 entry_index', schema: { type: 'integer', minimum: 0 } },
+        { name: 'download', in: 'query', description: '1 = attachment；否则 inline', schema: { type: 'string', enum: ['1'] } },
+      ],
+      responses: {
+        200: {
+          description: '文本/代码为 text/plain，二进制为 application/octet-stream；不执行 HTML/SVG',
+          headers: {
+            'Content-Disposition': { schema: { type: 'string' } },
+            'X-Content-Type-Options': { schema: { type: 'string' } },
+          },
+          content: {
+            'text/plain': { schema: { type: 'string' } },
+            'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+          },
+        },
+        400: Err('id/entryIndex 不合法，或目标是目录'),
+        404: Err('代码库或条目不存在'),
+        409: Err('代码库还不是 ready'),
+        413: Err('条目实际解压字节超过 100MB'),
+        422: Err('ZIP 读取失败'),
+        500: Err('读取文件失败'),
+      },
+    },
+  },
+  '/codebases/{id}/original': {
+    get: {
+      tags: ['Codebases'],
+      operationId: 'downloadCodebaseOriginal',
+      summary: '302 到原 ZIP 的 presigned GET',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: '代码库 UUID', schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        302: {
+          description: '重定向到 MinIO presigned GET（attachment + no-store）',
+          headers: {
+            Location: { schema: { type: 'string', format: 'uri' } },
+            'Cache-Control': { schema: { type: 'string' } },
+          },
+        },
+        400: Err('id 不是 UUID'),
+        404: Err('代码库或原始 ZIP 不存在'),
+        409: Err('代码库还不是 ready'),
+        500: Err('生成下载地址失败'),
       },
     },
   },
@@ -427,18 +730,66 @@ const CustomSchemas = {
   },
   Resource: {
     type: 'object',
-    required: ['id', 'title', 'source', 'data_uri', 'content_type', 'status', 'error_reason', 'created_at', 'updated_at', 'deleted_at'],
+    required: ['id', 'title', 'source', 'data_uri', 'content_type', 'status', 'error_reason', 'storage_size_bytes', 'content_hash', 'created_at', 'updated_at', 'deleted_at'],
     properties: {
       id: { type: 'string', format: 'uuid' },
       title: { type: 'string' },
       source: { type: ['string', 'null'] },
       data_uri: { type: 'string' },
-      content_type: { type: 'string', enum: ['url', 'markdown', 'plaintext'] },
-      status: { type: 'string', enum: ['processing', 'ready', 'failed'] },
+      content_type: { type: 'string', description: '文件 MIME，例如 text/html / text/markdown / text/plain' },
+      status: { type: 'string', enum: ['uploading', 'uploaded', 'processing', 'ready', 'upload_failed', 'process_failed'] },
       error_reason: { type: ['string', 'null'] },
+      storage_size_bytes: { type: ['integer', 'null'], format: 'int64' },
+      content_hash: { type: ['string', 'null'], pattern: '^[0-9a-f]{64}$', description: '归档原始字节的 SHA-256；URL 抓取失败等未算 hash 的行为 null' },
       created_at: { type: 'string', format: 'date-time' },
       updated_at: { type: 'string', format: 'date-time' },
       deleted_at: { type: ['string', 'null'], format: 'date-time' },
+    },
+  },
+  CodebaseEntry: {
+    type: 'object',
+    required: ['path', 'entry_index', 'is_dir', 'compressed_size', 'uncompressed_size', 'compression_method'],
+    properties: {
+      path: { type: 'string' },
+      entry_index: { type: 'integer', minimum: 0 },
+      is_dir: { type: 'boolean' },
+      compressed_size: { type: 'integer', minimum: 0 },
+      uncompressed_size: { type: 'integer', minimum: 0 },
+      compression_method: { type: 'integer' },
+    },
+  },
+  Codebase: {
+    type: 'object',
+    required: ['id', 'title', 'original_filename', 'data_uri', 'content_type', 'status', 'error_reason', 'storage_size_bytes', 'file_count', 'declared_uncompressed_bytes', 'created_at', 'updated_at'],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      title: { type: 'string' },
+      original_filename: { type: 'string' },
+      data_uri: { type: 'string' },
+      content_type: { type: 'string', enum: ['application/zip'] },
+      status: { type: 'string', enum: ['uploading', 'processing', 'ready', 'failed'] },
+      error_reason: { type: ['string', 'null'] },
+      storage_size_bytes: { type: ['integer', 'null'], format: 'int64' },
+      file_count: { type: 'integer', minimum: 0 },
+      declared_uncompressed_bytes: { type: 'integer', minimum: 0 },
+      created_at: { type: 'string', format: 'date-time' },
+      updated_at: { type: 'string', format: 'date-time' },
+    },
+  },
+  CodebaseUploadCreated: {
+    type: 'object',
+    required: ['codebase', 'upload'],
+    properties: {
+      codebase: Ref('Codebase'),
+      upload: {
+        type: 'object',
+        required: ['url', 'method', 'contentType'],
+        properties: {
+          url: { type: 'string', format: 'uri' },
+          method: { type: 'string', enum: ['PUT'] },
+          contentType: { type: 'string', enum: ['application/zip'] },
+        },
+      },
     },
   },
   Chunk: {
@@ -472,14 +823,43 @@ const CustomSchemas = {
       deleted_at: { type: ['string', 'null'], format: 'date-time' },
     },
   },
-  IngestRequest: {
+  CreateResourceRequest: {
     type: 'object',
-    description: 'url 与 content 必须恰好给一个；给 content 时 content_type 必填',
+    description: 'url、content、filename 必须恰好给一个；给 content 时 content_type 必填',
     properties: {
       url: { type: 'string', format: 'uri' },
       content: { type: 'string' },
-      content_type: { type: 'string', enum: ['markdown', 'plaintext'] },
+      filename: { type: 'string', description: '只支持 .md/.txt；文件由浏览器直传 MinIO' },
+      size: { type: 'integer', minimum: 0, maximum: 10485760 },
+      content_hash: { type: 'string', pattern: '^[0-9a-f]{64}$', description: '文件必填：原始字节的 SHA-256 小写 hex；URL/粘贴由服务端算' },
+      content_type: { type: 'string', enum: ['text/markdown', 'text/plain'] },
       title: { type: 'string' },
+    },
+  },
+  ResourceCreated: {
+    type: 'object',
+    required: ['resource'],
+    properties: { resource: Ref('Resource') },
+  },
+  FileUploadCreated: {
+    type: 'object',
+    required: ['resource', 'upload'],
+    properties: {
+      resource: Ref('Resource'),
+      upload: {
+        type: 'object',
+        required: ['url', 'method', 'contentType'],
+        properties: {
+          url: { type: 'string', format: 'uri' },
+          method: { type: 'string', enum: ['PUT'] },
+          contentType: { type: 'string' },
+        },
+      },
+    },
+  },
+  IngestRequest: {
+    type: 'object',
+    properties: {
       chunker: { type: 'string', default: 'legacy' },
     },
   },
@@ -492,7 +872,7 @@ const CustomSchemas = {
       warning: { type: 'string' },
     },
   },
-  IngestFailed: {
+  ResourceFailed: {
     type: 'object',
     required: ['code', 'message', 'resource'],
     properties: {
@@ -513,7 +893,7 @@ const CustomSchemas = {
       code: { type: 'string' },
       message: { type: 'string' },
       resource_id: { type: 'string', format: 'uuid' },
-      status: { type: 'string', enum: ['processing', 'ready', 'failed', 'gone'] },
+      status: { type: 'string', enum: ['uploading', 'uploaded', 'processing', 'ready', 'upload_failed', 'process_failed', 'gone'] },
     },
   },
   RetrieveRequest: {

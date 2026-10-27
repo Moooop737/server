@@ -1,9 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { legacySplit, splitBySeparators } from './legacy'
-import { resolveChunkerConfig } from './config'
-import { protectedSpans } from './protected'
-import { CODE_BLOCK, makeDoc, TABLE } from './legacy.fixtures'
+import { legacySplit, splitBySeparators } from '../src/ingest/chunk/legacy'
+import { resolveChunkerConfig } from '../src/ingest/chunk/config'
+import { protectedSpans } from '../src/ingest/chunk/protected'
+import { CODE_BLOCK, makeDoc, TABLE } from '../src/ingest/chunk/legacy.fixtures'
 
 // ── 1. 15 字符小例子：逐块内容和下标都要等于设计时手推的那张表 ──
 

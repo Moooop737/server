@@ -3,24 +3,27 @@ import type { StageSink } from '../trace/systemtrace/stage'
 
 // ── 工厂输入：装配规格（无数据）──
 export interface Recipe {
-  fetcher: string   // 'http' | 'passthrough'
+  fetcher: string   // 'http' | 'passthrough' | 'storage'
   parser: string    // 'html' | 'text'
   chunker: string   // 'legacy'
   embedding: EmbeddingHandle  // 装配层从 model 清单选定的那一行，入库与检索共用同一个
   repo: Repo
 }
 
-// ── run/batch 输入：业务数据 ──
+// ── run/batch 输入：业务数据（旧来源类型或 MIME）；runExisting 用 data_uri 从 MinIO 读 ──
 export interface KBData {
-  content_type: Resource['content_type'] // 'url' | 'markdown' | 'plaintext'
+  content_type: string
   url?: string
   content?: string
+  data_uri?: string
   title?: string
+  content_hash?: string // 归档时声明的 SHA-256，storage fetcher 对读回字节复算后比对
 }
 
 // ── 工厂输出：可执行对象 ──
 export interface Ingest {
   run(Data: KBData, Signal?: AbortSignal, Options?: IngestOptions): Promise<IngestResult>
+  runExisting(Resource: Resource, Options?: IngestOptions): Promise<IngestResult>
   batch(Data: KBData[], Signal?: AbortSignal, Options?: IngestOptions): Promise<IngestResult[]>
 }
 
@@ -73,6 +76,7 @@ export interface Fetched {
   final_url?: string
   content_type?: string
   http_status?: number
+  sha256?: string // storage fetcher 对对象字节复算的结果
 }
 export interface Parser {
   readonly name: string

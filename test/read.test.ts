@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { LangfuseReadError, langfuseReady, readLangfuseObservations } from './read'
+import { LangfuseReadError, langfuseReady, readLangfuseObservations } from '../src/trace/llmtrace/read'
 
 const Observation = {
   id: 'obs-1',

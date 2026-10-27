@@ -1,26 +1,29 @@
 /**
- * 入库工厂 —— IngestFactory.assemble(Recipe) 把策略名兑换成实例、捆 repo，产出一个数据无关的可执行对象 Ingest。
- * run(KBData, CallerSignal) 跑单条；batch(KBData[], CallerSignal) 用同一台机器跑多条，每条独立（一条失败或抛出都不阻断其余，abort 后未开始的不再建行、也不出结果）。
- * 生命周期：查重 → 建 processing 行(title 占位) → 登记 in-flight controller → fetch → parse → 回填真标题 → chunk → embed → 同事务写 chunk+向量并把行转 ready → finally 注销登记。
- * 建行之后的失败都留在那条行上(failed) 并带原因；建行之前的拒绝(查重命中/进来就已取消)返回 resource:null。
- * 取消信号的持有者是本管线，不是 HTTP 连接：runOne 自己 new AbortController 并按 resourceId 登记，任意请求都能通过 InflightRegistry.abort(id) 按下它；
+ * 入库工厂 —— IngestFactory.assemble(Recipe) 把策略名兑换成实例、捆 repo，产出一个可执行对象 Ingest。
+ * run(KBData) 是旧同步入口（自己建行 + http/passthrough）；runExisting(Resource) 处理已归档行：set processing → 从 data_uri 读 → 复算 hash 比对 → parse → chunk → embed → write。
+ * batch 仍走 run；每条独立，一条失败或抛出都不阻断其余，abort 后未开始的不再建行、也不出结果。
+ * 生命周期：登记 in-flight controller → fetch → parse → 回填真标题 → chunk → embed → 同事务写 chunk+向量并把行转 ready → finally 注销登记。
+ * 建行/取行之后的失败都留在那条行上(process_failed) 并带原因；建行之前的拒绝(查重命中/进来就已取消)返回 resource:null。
+ * 取消信号的持有者是本管线，不是 HTTP 连接：execute 自己 new AbortController 并按 resourceId 登记；
  * 调用方另可传一个自己的信号（batch 的整批中止、未来 worker 的停机），两者任一触发即掐。客户端断连不再是取消来源。
- * 取消延迟有下限：parse 与 chunk 是同步的，pg 写入也不吃 signal ⇒ 只能在异步边界上观测到取消，最坏要等当前那一段同步/写事务跑完（撤回多写的那一笔由写入后的复查负责）。
- * 结果码：E_DUPLICATE 查重 / E_CANCELLED 取消 / E_TIMEOUT stage 超时 / E_RESOURCE_GONE 写入期间资源被删 / E_INGEST_FAILED 其余。
+ * 取消延迟有下限：parse 与 chunk 是同步的，pg 写入也不吃 signal ⇒ 只能在异步边界上观测到取消，最坏要等当前那一段同步/写事务跑完。
+ * 结果码：E_DUPLICATE 查重 / E_CANCELLED 取消 / E_TIMEOUT stage 超时 / E_HASH_MISMATCH 对象字节与归档 hash 不符 / E_RESOURCE_GONE 写入期间资源被删 / E_INGEST_FAILED 其余。
  * 硬约束：Signal 只喂 fetch/embed 这类长操作；fail() 落库改状态绝不复用 Signal（aborted signal 会连"失败留痕"一起杀掉）。
- * 依赖：contracts(类型) / adapter 的门(Repo,EmbeddingHandle,embedChunks) / inflight(取消登记处) / recipes(注册表经构造注入)。
+ * 依赖：contracts(类型) / adapter 的门(Repo,EmbeddingHandle,embedChunks,ObjectStoreHandle) / inflight / recipes。
  */
 
 import 'reflect-metadata'
-import { embedChunks } from '../adapter/contract'
+import { embedChunks, ObjectStoreHandle } from '../adapter/contract'
+import { AppConfig } from '../config'
 import { NoopStageSink, runStage } from '../trace/systemtrace/stage'
 import { logInfo, logError } from '../trace/systemtrace/log'
 
 export { IngestFactory, IngestError }
 
 import type { Recipe, KBData, Ingest, IngestResult, IngestContext, StageRegistry, IngestOptions } from './contracts'
+import type { Resource } from '../adapter/contract'
 import { InflightRegistry } from './inflight'
-import { container, singleton } from 'tsyringe';
+import { container, inject, singleton } from 'tsyringe';
 import { createStageRegistry } from './recipes';
 
 class IngestError extends Error {
@@ -37,8 +40,8 @@ class IngestFactory {
   private readonly reg: StageRegistry
   private readonly inflight: InflightRegistry
 
-  constructor() {
-    this.reg = createStageRegistry()
+  constructor(@inject(ObjectStoreHandle) Store: ObjectStoreHandle, @inject(AppConfig) Config: AppConfig) {
+    this.reg = createStageRegistry(Store, Config.s3Bucket)
     this.inflight = container.resolve(InflightRegistry)
   }
 
@@ -50,37 +53,28 @@ class IngestFactory {
     const embedding = Recipe.embedding
     const inflight = this.inflight
 
-    const runOne = async (Data: KBData, CallerSignal?: AbortSignal, Options?: IngestOptions): Promise<IngestResult> => {
-      if (CallerSignal?.aborted) return { resource: null, chunkCount: 0, failure: { code: 'E_CANCELLED', reason: '入库取消' } }
+    const execute = async (
+      Resource: Resource,
+      Data: KBData,
+      FetchInput: unknown,
+      GivenTitle: string,
+      CallerSignal?: AbortSignal,
+      Options?: IngestOptions,
+    ): Promise<IngestResult> => {
       const Sink = Options?.sink ?? NoopStageSink
 
-      if (Data.url) {
-        const dup = await repo.findActiveBySource(Data.url)
-        if (dup) return { resource: null, chunkCount: 0, failure: { code: 'E_DUPLICATE', reason: '同 URL 已有 ready/processing 资源' } }
-      }
-
-      const isUrl = !!Data.url
-      const givenTitle = Data.title?.trim() ?? ''
-      const resource = await repo.createResource({
-        title: givenTitle || (isUrl ? hostnameOf(Data.url!) : '未命名'),
-        source: isUrl ? Data.url! : null,
-        data_uri: isUrl ? Data.url! : `urn:kc:paste:${globalThis.crypto.randomUUID()}`,
-        content_type: Data.content_type,
-        status: 'processing',
-      })
-
-      // 取消开关由服务端持有：登记后才能被任意请求按下；调用方自带的信号（batch 整批中止/worker 停机）并进来，任一触发即掐
+      // 取消开关由服务端持有：登记后才能被任意请求按下；调用方自带的信号并进来，任一触发即掐
       const ctrl = new AbortController()
       const Signal = CallerSignal ? AbortSignal.any([ctrl.signal, CallerSignal]) : ctrl.signal
 
       // 一次故障只留一行日志：code 给人分支、reason 进库、cause 只进日志。主动取消不算错误，用 log 级不用 error 级
       const fail = async (Reason: string, Code = 'E_INGEST_FAILED', Cause?: unknown): Promise<IngestResult> => {
-        const extra = { resource_id: resource.id, reason: Reason, ...(Cause ? { cause: errMessage(Cause) } : {}) }
+        const extra = { resource_id: Resource.id, reason: Reason, ...(Cause ? { cause: errMessage(Cause) } : {}) }
         if (Code === 'E_INGEST_FAILED') logError(Code, Reason, extra)
         else logInfo(Code, Reason, extra)
-        await repo.deleteChunksByResource(resource.id).catch((err) => logError('E_FAIL_CLEAN', errMessage(err)))
-        await repo.updateResourceStatus(resource.id, 'failed', Reason).catch((err) => logError('E_FAIL_MARK', errMessage(err))) // 不复用 Signal
-        return { resource: { ...resource, status: 'failed', error_reason: Reason }, chunkCount: 0, failure: { code: Code, reason: Reason } }
+        await repo.deleteChunksByResource(Resource.id).catch((err) => logError('E_FAIL_CLEAN', errMessage(err)))
+        await repo.updateResourceStatus(Resource.id, 'process_failed', Reason).catch((err) => logError('E_FAIL_MARK', errMessage(err))) // 不复用 Signal
+        return { resource: { ...Resource, status: 'process_failed', error_reason: Reason }, chunkCount: 0, failure: { code: Code, reason: Reason } }
       }
 
       const cancelled = () => fail('入库取消', 'E_CANCELLED')
@@ -90,12 +84,12 @@ class IngestFactory {
 
       const ctx: IngestContext = { data: Data }
       try {
-        inflight.add(resource.id, ctrl)
+        inflight.add(Resource.id, ctrl)
 
         const fetched = await runStage(
           Sink,
           'fetch',
-          { url: Data.url ?? null },
+          FetchInput,
           async () => {
             await fetcher.run(ctx, Signal)
             return ctx.fetched ?? { raw: '' }
@@ -108,6 +102,9 @@ class IngestFactory {
           }),
         )
         if (Signal.aborted) return await cancelled() // parse/chunk 是同步的，过了这个点就再也观测不到取消，直到它们跑完
+        if (Data.content_hash !== undefined && fetched.sha256 !== Data.content_hash) {
+          return await fail('内容 hash 与归档时不一致', 'E_HASH_MISMATCH')
+        }
         const parsed = await runStage(
           Sink,
           'parse',
@@ -120,9 +117,9 @@ class IngestFactory {
         )
         if (!parsed || parsed.text.trim() === '') return await fail('解析后无正文')
 
-        if (!givenTitle && parsed.title && parsed.title !== resource.title) {
-          await repo.updateResourceTitle(resource.id, parsed.title)
-          resource.title = parsed.title
+        if (!GivenTitle && parsed.title && parsed.title !== Resource.title) {
+          await repo.updateResourceTitle(Resource.id, parsed.title)
+          Resource.title = parsed.title
         }
 
         const plans = await runStage(
@@ -159,7 +156,7 @@ class IngestFactory {
             'write',
             { chunk_count: plans.length },
             () => repo.writeChunksWithEmbeddings(
-              resource.id,
+              Resource.id,
               plans.map((p) => ({ chunk_index: p.chunk_index, content: p.content, start_offset: p.start_offset, end_offset: p.end_offset })),
               vectors.map((v) => ({ dimension: v.length, model: embedding.modelId, embedding: v })),
             ),
@@ -169,7 +166,7 @@ class IngestFactory {
           if (Signal.aborted) return await cancelled()
 
           const warning = thinPage(ctx.fetched?.raw, parsed.text)
-          return { resource: { ...resource, status: 'ready', error_reason: null }, chunkCount, ...(warning ? { warning } : {}) }
+          return { resource: { ...Resource, status: 'ready', error_reason: null }, chunkCount, ...(warning ? { warning } : {}) }
         } catch (err) {
           if ((err as { code?: string }).code === 'E_RESOURCE_GONE') return await fail('已删除，写入中止', 'E_RESOURCE_GONE', err)
           return await failFrom(err, 'embedding_error')
@@ -177,12 +174,44 @@ class IngestFactory {
       } catch (err) {
         return await failFrom(err, '入库失败')
       } finally {
-        inflight.remove(resource.id, ctrl)
+        inflight.remove(Resource.id, ctrl)
       }
+    }
+
+    const runOne = async (Data: KBData, CallerSignal?: AbortSignal, Options?: IngestOptions): Promise<IngestResult> => {
+      if (CallerSignal?.aborted) return { resource: null, chunkCount: 0, failure: { code: 'E_CANCELLED', reason: '入库取消' } }
+
+      if (Data.url) {
+        const dup = await repo.findActiveBySource(Data.url)
+        if (dup) return { resource: null, chunkCount: 0, failure: { code: 'E_DUPLICATE', reason: '同 URL 已有未删除资源' } }
+      }
+
+      const isUrl = !!Data.url
+      const givenTitle = Data.title?.trim() ?? ''
+      const resource = await repo.createResource({
+        title: givenTitle || (isUrl ? hostnameOf(Data.url!) : '未命名'),
+        source: isUrl ? Data.url! : null,
+        data_uri: isUrl ? Data.url! : `urn:kc:paste:${globalThis.crypto.randomUUID()}`,
+        content_type: mimeForLegacyContentType(Data.content_type),
+        status: 'processing',
+      })
+
+      return execute(resource, Data, { url: Data.url ?? null }, givenTitle, CallerSignal, Options)
+    }
+
+    const runExisting = async (Resource: Resource, Options?: IngestOptions): Promise<IngestResult> => {
+      const data: KBData = {
+        content_type: Resource.content_type,
+        data_uri: Resource.data_uri,
+        ...(Resource.content_hash === null ? {} : { content_hash: Resource.content_hash }),
+      }
+      await repo.updateResourceStatus(Resource.id, 'processing')
+      return execute({ ...Resource, status: 'processing' }, data, { data_uri: Resource.data_uri }, Resource.title, undefined, Options)
     }
 
     return {
       run: runOne,
+      runExisting,
       batch: async (Data, Signal, Options) => {
         const out: IngestResult[] = []
         for (const d of Data) {
@@ -206,6 +235,13 @@ function hostnameOf(Url: string): string {
   } catch {
     return Url.slice(0, 40)
   }
+}
+
+function mimeForLegacyContentType(ContentType: string): string {
+  if (ContentType === 'url') return 'text/html'
+  if (ContentType === 'markdown') return 'text/markdown'
+  if (ContentType === 'plaintext') return 'text/plain'
+  return ContentType
 }
 
 const THIN_RAW_MIN_CHARS = 2000

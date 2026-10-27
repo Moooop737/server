@@ -45,6 +45,7 @@
     "tsyringe": "^4.10.0",
     "turndown": "^7.2.4",
     "turndown-plugin-gfm": "^1.0.2",
+    "yauzl": "^3.4.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
@@ -52,10 +53,13 @@
     "@types/node": "^26.6.5",
     "@types/pg": "^8.23.1",
     "@types/turndown": "^5.0.6",
+    "@types/yauzl": "^3.4.0",
+    "@types/yazl": "^3.3.1",
     "@vitest/ui": "^5.0.3",
     "drizzle-kit": "0.31.11",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.3",
+    "yazl": "^3.3.1"
   }
 }

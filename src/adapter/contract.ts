@@ -3,6 +3,7 @@
  * 门只交服务、不交连接：DbHandle 造池，PostgresRepo 持有池与 Drizzle 实例；Pool 与 SQL 文本仍不出 repo/（AD-3），
  * 所以这里不出现 `pg`，也没有「借一条连接」的原语可导出。
  * Repo 按用例分组：资源/分块、会话/消息、检索候选、trace 写入；CRUD 的 HTTP 投影由 routes/crud.ts 统一注册 hono-crud。
+ * Codebases 是独立领域：PostgresCodebaseRepo 只交 CodebaseRepo 接口，不复用 Repo 的资源方法，也不进 hono-crud。
  * ChunkCandidate 就是检索命中去掉名次分那一位 —— score 由融合侧产出，不该由基础层造，
  * 所以两条候选查询交出 ChunkCandidate，retrieve/search/ 的两个适配器补上 score: 0 再交给 Retriever。
  * EmbeddingHandle 与 ChatHandle 是句柄选择位，都是 @singleton() 类：各自拿 AppConfig 的名字（EMBEDDING_MODEL / CHAT_MODEL）去 ModelRegistry 的两张表里兑换那一行，名字不在册就当场点名退出（E_EMBEDDING_MODEL / E_CHAT_MODEL）—— 选择与校验住在同一个构造里，别处不再自己做这个名字兑换，也不再拿 ! 兜住查不到的情况。
@@ -15,9 +16,12 @@
  * 方法级前置条件（调用方只读这一份，不必开 repo/ 各文件）：
  * · writeChunksWithEmbeddings：Vectors 与 Chunks 同序等长（由调用方 ingest 判长度）；chunk、向量、转 ready 同一事务，
  *   不存在「向量已落、行还 processing」；返回写入 chunk 数；期间资源被软删则整笔回滚并抛 code='E_RESOURCE_GONE'。
- * · findActiveBySource：只认 status ∈ ready/processing 且未软删。
+ * · findActiveBySource：只认 status ∈ uploading/uploaded/processing/ready 且未软删。
  * · softDeleteResource：resources 留痕、chunks 物理删（embeddings 经 FK source_id→chunks.id ON DELETE CASCADE 随之消失）；
  *   返回 false = 该行不存在或早已软删。
+ * · markResourceUploaded：对象已 stat 后确认大小，只从 uploading/uploaded/upload_failed 转 uploaded。
+ * · restoreResource：只接软删行，清 deleted_at 后回到 uploaded；不是软删行返回 null。
+ * · markStaleOnBoot：processing → process_failed，超过 24h 的 uploading → upload_failed。
  * · dimensionsInStore：数的是 embeddings 的维度事实，与行是否软删无关；库不可达时抛，由调用方处置（检索层每请求现查一次，见 retrieve/retrievers.ts）。
  * · updateResourceStatus / 写入路径都自带 `deleted_at IS NULL` 谓词，不由调用方拼。
  * · trace 两条只写 traces 公共行；insert/finish 失败不影响业务，吞错与日志归调用方（见 trace/systemtrace/endpoint.ts）。
@@ -28,11 +32,12 @@
  * 实体形状不再有跨层共享盒（原 `types/` 已删）：别盒要用哪一位，由本门逐个点名交出（现交 Resource 与四张 Drizzle 表）。
  */
 
-export {RetrieverHandle, PostgresRepo, EmbeddingHandle, ChatHandle, ObjectStoreHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, embedChunks }
+export {RetrieverHandle, PostgresRepo, PostgresCodebaseRepo, EmbeddingHandle, ChatHandle, ObjectStoreHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, embedChunks }
 export { resources, sessions, messages, traces } from './repo/orm/schema'
 export { listChatSessions, listChatTraces, getChatTrace } from './repo/observability'
 export { ObjectStoreError } from './storage/object-store'
-export type { Repo, ChunkCandidate, Resource, Message, Trace, TraceStage, TraceStageInput, TracePayloads, TracePayloadOmitReason, RegistedProviders, RegistedModels }
+export type { Repo, CodebaseRepo, ChunkCandidate, Resource, ResourceStatus, Message, Trace, TraceStage, TraceStageInput, TracePayloads, TracePayloadOmitReason, RegistedProviders, RegistedModels }
+export type { Codebase, CodebaseEntry, CodebaseStatus } from './repo/codebase'
 export type { ChatSessionSummary, ChatTraceSummary } from './repo/observability'
 export type { ObjectStore, ObjectStat, ObjectBody, ObjectGetOptions, ObjectPresignOptions, ObjectPresignPutOptions } from './storage/object-store'
 
@@ -42,9 +47,14 @@ import { pingDb } from './connection/pool'
 import { DbHandle } from './connection/db'
 import { createOrm } from './repo/orm/client'
 import {
-  createResource, updateResourceStatus, updateResourceTitle, softDeleteResource, markInterruptedAsFailed,
-  getResource, findActiveBySource, resourceCounts,
+  createResource, updateResourceStatus, updateResourceTitle, softDeleteResource, markResourceUploaded, restoreResource,
+  getResource, getResourceIncludingDeleted, getResourceByContentHash, findActiveBySource, dataUriExists, resourceCounts, markStaleOnBoot,
+  listDeletedResources, purgeResource,
 } from './repo/resource'
+import {
+  createCodebase, getCodebase, listCodebases, updateCodebaseStatus, markCodebaseReady, deleteCodebase,
+  codebaseDataUriExists, markStaleCodebases,
+} from './repo/codebase'
 import { writeChunksWithEmbeddings, deleteChunksByResource, getChunksPage } from './repo/chunk'
 import { dimensionsInStore, vectorCandidates } from './repo/search-vector'
 import { lexicalCandidates } from './repo/search-lexical'
@@ -61,7 +71,8 @@ import type { ObjectStore, ObjectGetOptions, ObjectPresignOptions, ObjectPresign
 
 import { AppConfig } from '../config'
 import { logError } from '../trace/systemtrace/log'
-import type { Resource, ResourceCounts } from './repo/resource'
+import type { Resource, ResourceStatus, ResourceCounts } from './repo/resource'
+import type { Codebase, CodebaseEntry, CodebaseStatus } from './repo/codebase'
 import type { Chunk, Embedding } from './repo/chunk'
 import type { Session } from './repo/session'
 import type { Message } from './repo/message'
@@ -76,18 +87,26 @@ import { RETRIEVER_RECIPE_NAMES } from '../retrieve/recipes';
 interface Repo {
   ping(): Promise<boolean>
   dimensionsInStore(): Promise<number[]>
-  markInterruptedAsFailed(): Promise<{ resources: number }>
+  markStaleOnBoot(): Promise<{ resources: number; uploads: number }>
   vectorCandidates(QueryVector: number[], Limit: number, Dim: number): Promise<ChunkCandidate[]>
   lexicalCandidates(QueryText: string, Limit: number): Promise<ChunkCandidate[]>
 
   createResource(
-    Data: Pick<Resource, 'title' | 'source' | 'data_uri' | 'content_type'> & Partial<Pick<Resource, 'status'>>,
+    Data: Pick<Resource, 'title' | 'source' | 'data_uri' | 'content_type' | 'status'>
+      & Partial<Pick<Resource, 'storage_size_bytes' | 'content_hash'>>,
   ): Promise<Resource>
   getResource(Id: string): Promise<Resource | null>
+  getResourceIncludingDeleted(Id: string): Promise<Resource | null>
+  getResourceByContentHash(Hash: string): Promise<Resource | null>
+  listDeletedResources(Offset: number, Limit: number, Search: string): Promise<{ Items: Resource[]; TotalCount: number }>
+  purgeResource(Id: string): Promise<Resource | null>
   resourceCounts(): Promise<ResourceCounts>
-  updateResourceStatus(Id: string, Status: Resource['status'], Reason?: string): Promise<void>
+  updateResourceStatus(Id: string, Status: ResourceStatus, Reason?: string): Promise<void>
   updateResourceTitle(Id: string, Title: string): Promise<void>
+  markResourceUploaded(Id: string, Size: number, ContentType?: string): Promise<boolean>
+  restoreResource(Id: string): Promise<Resource | null>
   findActiveBySource(Url: string): Promise<Resource | null>
+  dataUriExists(Uri: string): Promise<boolean>
   softDeleteResource(Id: string): Promise<boolean>
 
   writeChunksWithEmbeddings(
@@ -113,6 +132,22 @@ interface Repo {
   listChatSessions(Offset: number, Limit: number): Promise<{ Items: ChatSessionSummary[]; TotalCount: number }>
   listChatTraces(SessionId: string | null, Offset: number, Limit: number): Promise<{ Items: ChatTraceSummary[]; TotalCount: number }>
   getChatTrace(TraceId: string): Promise<ChatTraceSummary | null>
+}
+
+interface CodebaseRepo {
+  createCodebase(
+    Data: Pick<Codebase, 'title' | 'original_filename' | 'data_uri' | 'content_type' | 'status'>,
+  ): Promise<Codebase>
+  getCodebase(Id: string): Promise<Codebase | null>
+  listCodebases(Offset: number, Limit: number, Search: string): Promise<{ Items: Codebase[]; TotalCount: number }>
+  updateCodebaseStatus(Id: string, Status: CodebaseStatus, Reason?: string): Promise<boolean>
+  markCodebaseReady(
+    Id: string,
+    Data: Pick<Codebase, 'storage_size_bytes' | 'manifest' | 'file_count' | 'declared_uncompressed_bytes'>,
+  ): Promise<Codebase | null>
+  deleteCodebase(Id: string): Promise<Codebase | null>
+  codebaseDataUriExists(Uri: string): Promise<boolean>
+  markStaleCodebases(): Promise<{ processing: number; uploads: number }>
 }
 
 interface ChunkCandidate {
@@ -174,8 +209,8 @@ class PostgresRepo implements Repo {
     return dimensionsInStore(this.db)
   }
 
-  markInterruptedAsFailed() {
-    return markInterruptedAsFailed(this.db)
+  markStaleOnBoot() {
+    return markStaleOnBoot(this.db)
   }
 
   vectorCandidates(QueryVector: number[], Limit: number, Dim: number) {
@@ -187,7 +222,8 @@ class PostgresRepo implements Repo {
   }
 
   createResource(
-    Data: Pick<Resource, 'title' | 'source' | 'data_uri' | 'content_type'> & Partial<Pick<Resource, 'status'>>,
+    Data: Pick<Resource, 'title' | 'source' | 'data_uri' | 'content_type' | 'status'>
+      & Partial<Pick<Resource, 'storage_size_bytes' | 'content_hash'>>,
   ) {
     return createResource(this.db, Data)
   }
@@ -196,11 +232,27 @@ class PostgresRepo implements Repo {
     return getResource(this.orm, Id)
   }
 
+  getResourceIncludingDeleted(Id: string) {
+    return getResourceIncludingDeleted(this.orm, Id)
+  }
+
+  getResourceByContentHash(Hash: string) {
+    return getResourceByContentHash(this.orm, Hash)
+  }
+
+  listDeletedResources(Offset: number, Limit: number, Search: string) {
+    return listDeletedResources(this.db, Offset, Limit, Search)
+  }
+
+  purgeResource(Id: string) {
+    return purgeResource(this.db, Id)
+  }
+
   resourceCounts() {
     return resourceCounts(this.db)
   }
 
-  updateResourceStatus(Id: string, Status: Resource['status'], Reason?: string) {
+  updateResourceStatus(Id: string, Status: ResourceStatus, Reason?: string) {
     return updateResourceStatus(this.db, Id, Status, Reason)
   }
 
@@ -208,8 +260,20 @@ class PostgresRepo implements Repo {
     return updateResourceTitle(this.db, Id, Title)
   }
 
+  markResourceUploaded(Id: string, Size: number, ContentType?: string) {
+    return markResourceUploaded(this.db, Id, Size, ContentType)
+  }
+
+  restoreResource(Id: string) {
+    return restoreResource(this.db, Id)
+  }
+
   findActiveBySource(Url: string) {
     return findActiveBySource(this.db, Url)
+  }
+
+  dataUriExists(Uri: string) {
+    return dataUriExists(this.orm, Uri)
   }
 
   softDeleteResource(Id: string) {
@@ -282,6 +346,52 @@ class PostgresRepo implements Repo {
 
   getChatTrace(TraceId: string) {
     return getChatTrace(this.db, TraceId)
+  }
+}
+
+@singleton()
+class PostgresCodebaseRepo implements CodebaseRepo {
+  private readonly db: DbHandle['pool']
+
+  constructor(@inject(DbHandle) Db: DbHandle) {
+    this.db = Db.pool
+  }
+
+  createCodebase(
+    Data: Pick<Codebase, 'title' | 'original_filename' | 'data_uri' | 'content_type' | 'status'>,
+  ) {
+    return createCodebase(this.db, Data)
+  }
+
+  getCodebase(Id: string) {
+    return getCodebase(this.db, Id)
+  }
+
+  listCodebases(Offset: number, Limit: number, Search: string) {
+    return listCodebases(this.db, Offset, Limit, Search)
+  }
+
+  updateCodebaseStatus(Id: string, Status: CodebaseStatus, Reason?: string) {
+    return updateCodebaseStatus(this.db, Id, Status, Reason)
+  }
+
+  markCodebaseReady(
+    Id: string,
+    Data: Pick<Codebase, 'storage_size_bytes' | 'manifest' | 'file_count' | 'declared_uncompressed_bytes'>,
+  ) {
+    return markCodebaseReady(this.db, Id, Data)
+  }
+
+  deleteCodebase(Id: string) {
+    return deleteCodebase(this.db, Id)
+  }
+
+  codebaseDataUriExists(Uri: string) {
+    return codebaseDataUriExists(this.db, Uri)
+  }
+
+  markStaleCodebases() {
+    return markStaleCodebases(this.db)
   }
 }
 

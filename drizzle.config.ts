@@ -14,6 +14,6 @@ export default {
   out: './db/.drizzle',
   dbCredentials: { url: DatabaseUrl },
   schemaFilter: ['public'],
-  tablesFilter: ['resources', 'sessions', 'messages', 'traces', 'trace_stages'],
+  tablesFilter: ['resources', 'sessions', 'messages', 'traces', 'trace_stages', 'codebases'],
   introspect: { casing: 'preserve' },
 } satisfies Config

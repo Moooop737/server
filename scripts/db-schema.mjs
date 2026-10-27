@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 
 const OutDir = 'db/.drizzle'
 const Target = 'src/adapter/repo/orm/schema.ts'
-const Tables = ['resources', 'sessions', 'messages', 'traces', 'trace_stages']
+const Tables = ['resources', 'sessions', 'messages', 'traces', 'trace_stages', 'codebases']
 
 rmSync(OutDir, { recursive: true, force: true })
 
@@ -38,7 +38,7 @@ if (/halfvec|bm25|embeddings/.test(Schema)) throw new Error('search/vector objec
 if (Schema.includes("mode: 'string'")) throw new Error('timestamp string mode was not normalized')
 
 const Header = `/**
- * 由 \`npm run db:schema\` 生成，含四张 CRUD 表与 trace_stages（仅 schema）；timestamptz 用 date 模式。
+ * 由 \`npm run db:schema\` 生成，含四张 CRUD 表、codebases 与 trace_stages（仅 schema）；timestamptz 用 date 模式。
  * 索引归 dbmate；BM25/向量仍走 search-lexical/search-vector 的裸 SQL。
  * 不要手改。
  */

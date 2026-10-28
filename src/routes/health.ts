@@ -44,7 +44,7 @@ interface CachedResponse {
 
 function createHealthServices(Config: AppConfig, Repo: Repo, Store: ObjectStore): HealthService[] {
   const base = Config.ollamaBaseUrl
-  const emb = Config.embeddingModel
+  const emb = Config.embeddingModel.includes(':') ? Config.embeddingModel.slice(Config.embeddingModel.indexOf(':') + 1) : Config.embeddingModel
 
   return [
     {

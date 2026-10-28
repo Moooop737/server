@@ -12,6 +12,7 @@ import { ResourcesRoute } from './routes/resources'
 import { CodebasesRoute } from './routes/codebases'
 import { RetrieveRoute } from './routes/retrieve'
 import { ChatRoute } from './routes/chat'
+import { ModelsRoute } from './routes/models'
 import { SessionsRoute } from './routes/sessions'
 import { ObservabilityRoute } from './routes/observability'
 import { TracesRoute } from './routes/traces'
@@ -44,6 +45,7 @@ void (async () => {
     app.route('/health', createHealthRoute(createHealthServices(config, repo, store)))
     app.route('/retrieve', container.resolve(RetrieveRoute).build())
     app.route('/chat', container.resolve(ChatRoute).build())
+    app.route('/models', container.resolve(ModelsRoute).build())
     await registerAllCrud(app)
     app.route('/doc', createDocRoute(router, `http://${config.host}:${config.port}`))
 

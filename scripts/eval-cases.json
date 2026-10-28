@@ -1,0 +1,140 @@
+{
+  "name": "probe-2026-10-28",
+  "cases": [
+    {
+      "id": "L1-01",
+      "level": "L1",
+      "query": "RETRIEVAL_MIN_SIMILARITY 的默认值是多少？",
+      "expect": [
+        { "path": "prds/prd-dev-2026-10-09/prd-7a87a934.md" },
+        { "path": "planning-artifacts/epics.md" }
+      ],
+      "note": "答案 0.42；只兜字符噪声，不承担语义判据"
+    },
+    {
+      "id": "L1-02",
+      "level": "L1",
+      "query": "BM25 的词法查询必须走什么函数？",
+      "expect": [
+        { "path": "architecture-dev-2026-10-15/ARCHITECTURE-SPINE.md", "chunkIndex": 17 }
+      ],
+      "note": "答案 match_disjunction；裸交 @@@ 实测 8 条里 3 条抛错、4 条静默 0 命中"
+    },
+    {
+      "id": "L2-01",
+      "level": "L2",
+      "query": "回答过程中最多能连续查几次知识库？",
+      "expect": [
+        { "path": "planning-artifacts/epics.md" }
+      ],
+      "note": "答案 stepCountIs(5)，最多 5 步 / 4 次检索往返"
+    },
+    {
+      "id": "L2-02",
+      "level": "L2",
+      "query": "同一个文件重复入库，系统在什么时机发现它是重复的？",
+      "expect": [
+        { "path": "planning-artifacts/epics.md" }
+      ],
+      "note": "答案 去重门在 DB 建行与 MinIO 写入之前"
+    },
+    {
+      "id": "L2-03",
+      "level": "L2",
+      "query": "向量检索的阈值为什么没写进 SQL 的 WHERE 里？",
+      "expect": [
+        { "path": "review-reality-check.md" }
+      ],
+      "note": "答案 阈值过滤放 TS 侧；当初的依据在 review 里被实测推翻"
+    },
+    {
+      "id": "L3-01",
+      "level": "L3",
+      "query": "chat 的模型调用与工具明细存在哪里，本地 traces 表还留了什么？",
+      "expect": [
+        { "path": "planning-artifacts/epics.md" }
+      ],
+      "note": "答案 明细全在 Langfuse；本地只留 endpoint 公共行 + langfuse_trace_id"
+    },
+    {
+      "id": "L3-02",
+      "level": "L3",
+      "query": "trace 的 session_id 为什么不单独做成一个关联列？",
+      "expect": [
+        { "path": "planning-artifacts/epics.md" }
+      ],
+      "note": "答案 session_id 就是 sessions.id，同时也是 Langfuse sessionId"
+    },
+    {
+      "id": "L4-01",
+      "level": "L4",
+      "query": "怎么按租户隔离不同用户的知识库？",
+      "expect": [
+        { "path": "prds/prd-dev-2026-10-09/prd-7a87a934.md" }
+      ],
+      "note": "文档明确说 P1 不做多用户隔离；答成一套隔离方案就是被字面匹配骗"
+    },
+    {
+      "id": "L5-01",
+      "level": "L5",
+      "query": "LangChain 的 AgentExecutor 怎么配置？",
+      "expect": [],
+      "negative": true
+    },
+    {
+      "id": "L5-02",
+      "level": "L5",
+      "query": "Weaviate 的混合检索怎么设置权重？",
+      "expect": [],
+      "negative": true
+    },
+    {
+      "id": "L2-04",
+      "level": "L2",
+      "query": "为什么不给资源、chunk、消息各自造一个全局 URI？",
+      "expect": [
+        { "path": "architecture-dev-2026-10-15/ARCHITECTURE-SPINE.md", "chunkIndex": 12 }
+      ],
+      "note": "答案 AD-5：一个概念散在多处各拼一套是第一版实况；引用与回链靠 chunkId + 资源 data_uri"
+    },
+    {
+      "id": "L2-05",
+      "level": "L2",
+      "query": "从浏览器下载文件时签名校验失败，最可能是哪项配置写错了？",
+      "expect": [
+        { "path": "handoff-2026-10-26-epic5-story1-minio-adapter.md" },
+        { "path": "planning-artifacts/epics.md", "chunkIndex": 84 }
+      ],
+      "note": "答案 S3_ENDPOINT 必须等于浏览器访问 MinIO 的 host，presigned 签名覆盖 Host"
+    },
+    {
+      "id": "L3-03",
+      "level": "L3",
+      "query": "观测表里为什么不存 chunk 正文和完整的 embedding 向量？",
+      "expect": [
+        { "path": "planning-artifacts/epics.md", "chunkIndex": 40 },
+        { "path": "planning-artifacts/epics.md", "chunkIndex": 57 },
+        { "path": "handoff-2026-10-23-epic3-story3-retrieve-stages.md", "chunkIndex": 1 }
+      ],
+      "note": "答案 trace_stages 是阶段专用表，只放 id/计数/分数，不写正文与完整向量"
+    },
+    {
+      "id": "L4-02",
+      "level": "L4",
+      "query": "支持 PDF 和 Word 上传吗？",
+      "expect": [
+        { "path": "addendum-45ca28af.md", "chunkIndex": 3 },
+        { "path": "planning-artifacts/epics.md", "chunkIndex": 79 },
+        { "path": "deferred-work.md", "chunkIndex": 6 }
+      ],
+      "note": "答案 未排期/backlog，P2 不接；答成解析方案就是被字面匹配骗"
+    },
+    {
+      "id": "L5-03",
+      "level": "L5",
+      "query": "怎么用 Kubernetes 部署这个项目并做自动扩缩容？",
+      "expect": [],
+      "negative": true
+    }
+  ]
+}

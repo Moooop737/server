@@ -17,6 +17,7 @@ interface timestamp {
 interface Session extends timestamp {
   id: string
   title: string
+  group_name: string | null
 }
 
 function iso(v: Date | null): string | null {
@@ -27,6 +28,7 @@ function rowToSession(r: any): Session {
   return {
     id: r.id,
     title: r.title,
+    group_name: r.group_name,
     created_at: iso(r.created_at)!,
     updated_at: iso(r.updated_at)!,
     deleted_at: iso(r.deleted_at),
@@ -35,7 +37,7 @@ function rowToSession(r: any): Session {
 
 async function getSession(Db: Pool, Id: string): Promise<Session | null> {
   const { rows } = await Db.query(
-    `SELECT id, title, created_at, updated_at, deleted_at
+    `SELECT id, title, group_name, created_at, updated_at, deleted_at
      FROM sessions WHERE id = $1 AND deleted_at IS NULL`,
     [Id],
   )

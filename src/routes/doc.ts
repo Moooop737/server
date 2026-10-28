@@ -155,11 +155,13 @@ const CustomPaths = {
     get: {
       tags: ['Resources'],
       operationId: 'listDeletedResources',
-      summary: '回收站：分页读取软删资源',
+      summary: '「已删除」筛选：分页读取软删资源',
       parameters: [
         { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 1000000 } },
         { name: 'per_page', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } },
         { name: 'search', in: 'query', description: '按标题 / 来源搜索（最长 200 字）', schema: { type: 'string', maxLength: 200 } },
+        { name: 'sort', in: 'query', schema: { type: 'string', enum: ['created_at', 'updated_at', 'deleted_at', 'title', 'status'] } },
+        { name: 'order', in: 'query', schema: { type: 'string', enum: ['asc', 'desc'] } },
       ],
       responses: {
         200: Ok('软删资源与分页元数据', {

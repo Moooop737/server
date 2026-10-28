@@ -37,6 +37,7 @@ export const sessions = pgTable("sessions", {
 	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
 	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
 	deleted_at: timestamp({ withTimezone: true, mode: 'date' }),
+	group_name: text(),
 });
 
 export const messages = pgTable("messages", {

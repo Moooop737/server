@@ -32,7 +32,7 @@ const Tables: TableEntry[] = [
     tag: 'Resources',
     endpoints: {
       list: {
-        filtering: { fields: ['status', 'content_type', 'created_at', 'updated_at'] },
+        filtering: { fields: ['status', 'content_type', 'created_at', 'updated_at'], config: { status: ['in'] } },
         search: { fields: ['title', 'source'] },
         sorting: { fields: ['created_at', 'updated_at', 'title', 'status'], default: 'created_at', defaultOrder: 'desc' },
         pagination: { defaultPerPage: 1000, maxPerPage: 1000 },
@@ -45,7 +45,10 @@ const Tables: TableEntry[] = [
     table: sessions,
     path: '/sessions',
     tag: 'Sessions',
-    fields: z.object({ title: z.string().trim().min(1).optional() }),
+    fields: z.object({
+      title: z.string().trim().min(1).optional(),
+      group_name: z.string().trim().min(1).nullable().optional(),
+    }),
     endpoints: {
       list: {
         filtering: { fields: ['created_at', 'updated_at'] },

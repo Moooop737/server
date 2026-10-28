@@ -104,18 +104,30 @@ async function getResourceByContentHash(Db: Orm, Hash: string): Promise<Resource
   return rows[0] ? rowToResource(rows[0]) : null
 }
 
+const DELETED_SORT_COLUMNS: Record<string, string> = {
+  created_at: 'created_at',
+  updated_at: 'updated_at',
+  deleted_at: 'deleted_at',
+  title: 'title',
+  status: 'status',
+}
+
 async function listDeletedResources(
   Db: Pool,
   Offset: number,
   Limit: number,
   Search: string,
+  Sort = 'deleted_at',
+  Order: 'asc' | 'desc' = 'desc',
 ): Promise<{ Items: Resource[]; TotalCount: number }> {
   const Pattern = Search === '' ? null : `%${Search}%`
+  const Column = DELETED_SORT_COLUMNS[Sort] ?? 'deleted_at'
+  const Direction = Order === 'asc' ? 'ASC' : 'DESC'
   const { rows } = await Db.query(
     `SELECT * FROM resources
       WHERE deleted_at IS NOT NULL
         AND ($3::text IS NULL OR title ILIKE $3 OR source ILIKE $3)
-      ORDER BY deleted_at DESC, id DESC
+      ORDER BY ${Column} ${Direction}, id DESC
       LIMIT $1 OFFSET $2`,
     [Limit, Offset, Pattern],
   )
@@ -178,13 +190,13 @@ async function updateResourceTitle(Db: Pool, Id: string, Title: string): Promise
   )
 }
 
-// 上传成功的唯一状态落点：对象已 stat 到、大小已确认；允许从 uploading/uploaded/upload_failed/ready 重试
+// 上传成功的唯一状态落点：对象已 stat 到、大小已确认；允许从 uploading/uploaded/upload_failed/process_failed/ready 重试
 async function markResourceUploaded(Db: Pool, Id: string, Size: number, ContentType?: string): Promise<boolean> {
   const { rowCount } = await Db.query(
     `UPDATE resources
         SET status = 'uploaded', storage_size_bytes = $2, content_type = COALESCE($3::text, content_type),
             error_reason = NULL, updated_at = now()
-      WHERE id = $1 AND deleted_at IS NULL AND status IN ('uploading', 'uploaded', 'upload_failed', 'ready')`,
+      WHERE id = $1 AND deleted_at IS NULL AND status IN ('uploading', 'uploaded', 'upload_failed', 'process_failed', 'ready')`,
     [Id, Size, ContentType ?? null],
   )
   return rowCount === 1

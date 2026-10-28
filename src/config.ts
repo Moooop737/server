@@ -4,7 +4,7 @@
  * 代价说清：这条错误路径**不可被 catch**，要在测试里断「缺 DATABASE_URL 报 E_CONFIG_MISSING」只能开子进程看退出码与 stdout。
  * numOrThrow() 是整数型 env 的解析 + 范围校验工具，floatOrThrow() 管小数（检索阈值）；两者都在构造器里用。
  * embeddingDimensions 非 1024 不阻断、仅 warn：P1 只建 1024 档 partial HNSW，其它维度检索退顺序扫描（结果仍对、只是慢）。见 addendum A / AD-4。
- * CHAT_MODEL 与另外三个是必需项（缺失走 E_CONFIG_MISSING），但本文件不校验它在不在 model 清单里——那由 ChatHandle 的构造点名（E_CHAT_MODEL）；服务商与它的 Key 归 adapter/provider 登记表，本文件不再认 CHAT_PROVIDER。host 固定 127.0.0.1（AD-8 仅本地监听）。
+ * CHAT_MODEL 与另外三个是必需项（缺失走 E_CONFIG_MISSING），值是 `${provider}:${modelId}` 复合键，但本文件不校验它在不在 model 清单里——那由 ChatHandle 的构造点名（E_CHAT_MODEL）；服务商与它的 Key 归 adapter/provider 登记表，本文件不再认 CHAT_PROVIDER。host 固定 127.0.0.1（AD-8 仅本地监听）。
  * S3_* 是对象存储必需项；S3_ENDPOINT 必须等于浏览器访问 MinIO 的 Host（presign 的 Host 会被签进 URL），末尾斜杠会被去掉；S3_REGION 默认 us-east-1，S3_FORCE_PATH_STYLE 默认 true。密钥只进 AppConfig，不打印、不进错误信息。
  */
 

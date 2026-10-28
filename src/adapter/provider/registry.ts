@@ -34,7 +34,28 @@ const ProviderList = [
             name: 'ollama-compat',
             baseURL: `${(getEnv('OLLAMA_BASE_URL') ?? 'http://127.0.0.1:11434').replace(/\/+$/, '')}/v1`
         })
+    },
+    {
+        needsKey: true,
+        name: 'silicon-flow',
+        apiKey: getEnv('SILICONFLOW_API_KEY'),
+        create: (ApiKey) => createOpenAICompatible({
+            name: 'silicon-flow',
+            apiKey: ApiKey,
+            baseURL: 'https://api.siliconflow.cn/v1'
+        })
+    },
+    {
+        needsKey: true,
+        name: 'router1',
+        apiKey: getEnv('ROUTER1_API_KEY'),
+        create: (ApiKey) => createOpenAICompatible({
+            name: 'router1',
+            apiKey: ApiKey,
+            baseURL: getEnv('ROUTER1_END_POINT')!
+        })
     }
+
 ] as const satisfies ProviderEntry[]
 
 const providerRegistry = (): RegistedProviders => {

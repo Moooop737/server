@@ -32,7 +32,7 @@ class ChatService {
     this.history = History
   }
 
-  async ask(Query: string, SessionId: string, Signal: AbortSignal): Promise<Response> {
+  async ask(Query: string, SessionId: string, Signal: AbortSignal, Model?: LanguageModelV4): Promise<Response> {
     const TraceId = currentTraceId()
     const StartedMs = Date.now()
     const withTrace = <T>(Fn: () => T): T => TraceId === undefined ? Fn() : runWithTrace(TraceId, Fn)
@@ -54,7 +54,7 @@ class ChatService {
       let Failure: ChatFailure | null = null
 
       const Result = streamText({
-        model: this.model,
+        model: Model ?? this.model,
         messages: modelMessages,
         instructions: INSTRUCTIONS,
         tools: this.tools,

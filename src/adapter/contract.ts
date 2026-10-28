@@ -19,7 +19,7 @@
  * · findActiveBySource：只认 status ∈ uploading/uploaded/processing/ready 且未软删。
  * · softDeleteResource：resources 留痕、chunks 物理删（embeddings 经 FK source_id→chunks.id ON DELETE CASCADE 随之消失）；
  *   返回 false = 该行不存在或早已软删。
- * · markResourceUploaded：对象已 stat 后确认大小，只从 uploading/uploaded/upload_failed 转 uploaded。
+ * · markResourceUploaded：对象已 stat 后确认大小，从 uploading/uploaded/upload_failed/process_failed/ready 转 uploaded（后两者是重试入口）。
  * · restoreResource：只接软删行，清 deleted_at 后回到 uploaded；不是软删行返回 null。
  * · markStaleOnBoot：processing → process_failed，超过 24h 的 uploading → upload_failed。
  * · dimensionsInStore：数的是 embeddings 的维度事实，与行是否软删无关；库不可达时抛，由调用方处置（检索层每请求现查一次，见 retrieve/retrievers.ts）。
@@ -32,7 +32,7 @@
  * 实体形状不再有跨层共享盒（原 `types/` 已删）：别盒要用哪一位，由本门逐个点名交出（现交 Resource 与四张 Drizzle 表）。
  */
 
-export {RetrieverHandle, PostgresRepo, PostgresCodebaseRepo, EmbeddingHandle, ChatHandle, ObjectStoreHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, embedChunks }
+export { RetrieverHandle, PostgresRepo, PostgresCodebaseRepo, EmbeddingHandle, ChatHandle, ObjectStoreHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, embedChunks }
 export { resources, sessions, messages, traces } from './repo/orm/schema'
 export { listChatSessions, listChatTraces, getChatTrace } from './repo/observability'
 export { ObjectStoreError } from './storage/object-store'
@@ -98,7 +98,7 @@ interface Repo {
   getResource(Id: string): Promise<Resource | null>
   getResourceIncludingDeleted(Id: string): Promise<Resource | null>
   getResourceByContentHash(Hash: string): Promise<Resource | null>
-  listDeletedResources(Offset: number, Limit: number, Search: string): Promise<{ Items: Resource[]; TotalCount: number }>
+  listDeletedResources(Offset: number, Limit: number, Search: string, Sort?: string, Order?: 'asc' | 'desc'): Promise<{ Items: Resource[]; TotalCount: number }>
   purgeResource(Id: string): Promise<Resource | null>
   resourceCounts(): Promise<ResourceCounts>
   updateResourceStatus(Id: string, Status: ResourceStatus, Reason?: string): Promise<void>
@@ -172,7 +172,8 @@ class EmbeddingHandle {
       process.exit(1)
     }
     this.model = Models.embeddingModels[Name as EmbeddingModelId]!
-    this.modelId = Name
+    const Separator = Name.indexOf(':')
+    this.modelId = Separator === -1 ? Name : Name.slice(Separator + 1)
     this.dimensions = Config.embeddingDimensions
   }
 }
@@ -180,14 +181,32 @@ class EmbeddingHandle {
 @singleton()
 class ChatHandle {
   readonly model: LanguageModelV4
+  readonly models: LanguageModels
+  readonly providers: LanguageModelProviders
+  readonly names: LanguageModelNames
 
   constructor(@inject(AppConfig) Config: AppConfig, @inject(ModelRegistry) Models: RegistedModels) {
     const Name = Config.chatModel
-    if (!Object.hasOwn(Models.languageModels, Name)) {
-      logError('E_CHAT_MODEL', `CHAT_MODEL=${Name} 不在册；在册对话句柄=${Object.keys(Models.languageModels).join(',') || '无'}`)
+    this.models = Models.languageModels
+    this.providers = Models.languageProviders
+    this.names = Models.languageNames
+    if (!Object.hasOwn(this.models, Name)) {
+      logError('E_CHAT_MODEL', `CHAT_MODEL=${Name} 不在册；在册对话句柄=${Object.keys(this.models).join(',') || '无'}`)
       process.exit(1)
     }
-    this.model = Models.languageModels[Name as LanguageModelId]!
+    this.model = this.models[Name as LanguageModelId]!
+  }
+
+  resolve(Name: string): LanguageModelV4 | undefined {
+    return Object.hasOwn(this.models, Name) ? this.models[Name as LanguageModelId] : undefined
+  }
+
+  catalog(): { id: string; provider: string; name: string }[] {
+    return Object.keys(this.models).map((Id) => ({
+      id: Id,
+      provider: this.providers[Id as LanguageModelId]!,
+      name: this.names[Id as LanguageModelId] ?? Id,
+    }))
   }
 }
 
@@ -240,8 +259,8 @@ class PostgresRepo implements Repo {
     return getResourceByContentHash(this.orm, Hash)
   }
 
-  listDeletedResources(Offset: number, Limit: number, Search: string) {
-    return listDeletedResources(this.db, Offset, Limit, Search)
+  listDeletedResources(Offset: number, Limit: number, Search: string, Sort?: string, Order?: 'asc' | 'desc') {
+    return listDeletedResources(this.db, Offset, Limit, Search, Sort, Order)
   }
 
   purgeResource(Id: string) {
@@ -464,7 +483,17 @@ class RetrieverHandle {
 
 type RegistedProviders = Partial<Record<ProviderEntryName, ProviderV4>>
 
+type LanguageModels = Partial<Record<LanguageModelId, LanguageModelV4>>
+
+type LanguageModelProviders = Partial<Record<LanguageModelId, string>>
+
+type LanguageModelNames = Partial<Record<LanguageModelId, string>>
+
+type EmbeddingModels = Partial<Record<EmbeddingModelId, EmbeddingModelV4>>
+
 type RegistedModels = {
-  languageModels: Partial<Record<LanguageModelId, LanguageModelV4>>
-  embeddingModels: Partial<Record<EmbeddingModelId, EmbeddingModelV4>>
+  languageModels: LanguageModels
+  languageProviders: LanguageModelProviders
+  languageNames: LanguageModelNames
+  embeddingModels: EmbeddingModels
 }

@@ -82,13 +82,18 @@ class ResourcesRoute {
         return c.json({ code: 'E_BAD_QUERY', message: 'page 需为 1-1000000 的整数，per_page 需为 1-100 的整数' }, 400)
       }
       const Search = (c.req.query('search') ?? '').trim().slice(0, 200)
+      const Sort = c.req.query('sort') ?? 'deleted_at'
+      const Order = c.req.query('order') ?? 'desc'
+      if (!['created_at', 'updated_at', 'deleted_at', 'title', 'status'].includes(Sort) || (Order !== 'asc' && Order !== 'desc')) {
+        return c.json({ code: 'E_BAD_QUERY', message: 'sort 或 order 不合法' }, 400)
+      }
       try {
-        let First = await repo.listDeletedResources((Page - 1) * PerPage, PerPage, Search)
+        let First = await repo.listDeletedResources((Page - 1) * PerPage, PerPage, Search, Sort, Order)
         const TotalPages = Math.ceil(First.TotalCount / PerPage)
         let ShownPage = Page
         if (First.Items.length === 0 && First.TotalCount > 0 && Page > 1) {
           ShownPage = Math.max(1, TotalPages)
-          First = await repo.listDeletedResources((ShownPage - 1) * PerPage, PerPage, Search)
+          First = await repo.listDeletedResources((ShownPage - 1) * PerPage, PerPage, Search, Sort, Order)
         }
         return c.json({
           resources: First.Items,

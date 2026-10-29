@@ -28,6 +28,7 @@ function runConfig(Extra: Record<string, string> = {}) {
   delete Env.OLLAMA_BASE_URL
   delete Env.EMBEDDING_MODEL
   delete Env.CHAT_MODEL
+  delete Env.EVAL_DATABASE_URL
   Object.assign(Env, BaseRequired, Extra)
   const Res = spawnSync(Tsx, ['-e', Script], { cwd: ServerRoot, env: Env, encoding: 'utf8', timeout: 20_000 })
   return { Status: Res.status, Text: `${Res.stdout ?? ''}${Res.stderr ?? ''}`, Error: Res.error }
@@ -69,5 +70,17 @@ describe('AppConfig 失败路径', () => {
     expect(Res.Status).toBe(1)
     expect(Res.Text).toContain('E_CONFIG_INVALID')
     expect(Res.Text).toContain('S3_FORCE_PATH_STYLE')
+  })
+
+  it('没有 EVAL_DATABASE_URL → CONFIG_OK（共享模式，不阻断启动）', () => {
+    const Res = runConfig({
+      S3_ENDPOINT: 'http://127.0.0.1:9000',
+      S3_BUCKET: 'kbfile',
+      S3_ACCESS_KEY_ID: 'x',
+      S3_SECRET_ACCESS_KEY: 'x',
+    })
+    expect(Res.Error).toBeUndefined()
+    expect(Res.Status).toBe(0)
+    expect(Res.Text).toContain('CONFIG_OK')
   })
 })

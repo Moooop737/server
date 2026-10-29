@@ -8,7 +8,7 @@
 export {
   createResource, updateResourceStatus, updateResourceTitle, softDeleteResource, markResourceUploaded, restoreResource,
   getResource, getResourceIncludingDeleted, getResourceByContentHash, findActiveBySource, dataUriExists, resourceCounts, markStaleOnBoot,
-  listDeletedResources, purgeResource,
+  listDeletedResources, purgeResource, listResourcesByUriSuffix,
 }
 export type { Resource, ResourceStatus, ResourceCounts }
 
@@ -94,6 +94,17 @@ async function findActiveBySource(Db: Pool, Url: string): Promise<Resource | nul
     [Url],
   )
   return rows[0] ? rowToResource(rows[0]) : null
+}
+
+// 题集 gold 解析用：按 data_uri 后缀精确匹配 ready 资源（不用 LIKE，路径里的 _ / % 不当通配符）；命中多条由调用方判失败
+async function listResourcesByUriSuffix(Db: Pool, Suffix: string): Promise<Resource[]> {
+  const { rows } = await Db.query(
+    `SELECT * FROM resources
+       WHERE status = 'ready' AND deleted_at IS NULL AND right(data_uri, length($1) + 1) = '/' || $1
+       ORDER BY data_uri ASC`,
+    [Suffix],
+  )
+  return rows.map(rowToResource)
 }
 
 async function getResourceByContentHash(Db: Orm, Hash: string): Promise<Resource | null> {

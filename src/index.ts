@@ -13,6 +13,8 @@ import { CodebasesRoute } from './routes/codebases'
 import { RetrieveRoute } from './routes/retrieve'
 import { ChatRoute } from './routes/chat'
 import { ModelsRoute } from './routes/models'
+import { EvalRoute } from './routes/eval'
+import { EvalAssembly } from './eval/assembly'
 import { SessionsRoute } from './routes/sessions'
 import { ObservabilityRoute } from './routes/observability'
 import { TracesRoute } from './routes/traces'
@@ -34,6 +36,11 @@ void (async () => {
   const { app, router } = await createCrudRoot();
 
   try {
+    // 先挂 /eval 再挂主壳：Hono 的 use('*') 只作用于其后注册的路由，评测请求不落主库 trace
+    const Eval = container.resolve(EvalAssembly)
+    app.route('/eval', container.resolve(EvalRoute).build())
+    logInfo('I_EVAL_MODE', Eval.mode === 'shared' ? '共享模式：评测跑在主库' : '隔离模式：评测跑在独立库')
+
     app.use('*', async (c: any, next: any) => { c.set('db', repo.orm); await next() })
     app.use('*', createEndpointTrace(repo))
 
@@ -42,7 +49,7 @@ void (async () => {
     app.route('/traces', container.resolve(TracesRoute).build())
     app.route('/sessions', container.resolve(SessionsRoute).build())
     app.route('/observability', container.resolve(ObservabilityRoute).build())
-    app.route('/health', createHealthRoute(createHealthServices(config, repo, store)))
+    app.route('/health', createHealthRoute(createHealthServices(config, repo, store, { mode: Eval.mode, ping: () => Eval.repo.ping() })))
     app.route('/retrieve', container.resolve(RetrieveRoute).build())
     app.route('/chat', container.resolve(ChatRoute).build())
     app.route('/models', container.resolve(ModelsRoute).build())
@@ -55,6 +62,12 @@ void (async () => {
   }
 
   await cleanUpOnBoot(repo, container.resolve(PostgresCodebaseRepo), config)
+  try {
+    const Cleaned = await container.resolve(EvalAssembly).repo.markInterruptedRuns()
+    if (Cleaned > 0) logInfo('I_EVAL_RUN_CLEANUP', `中断的评测运行已标 cancelled：${Cleaned}`)
+  } catch (err) {
+    logWarn('W_EVAL_RUN_CLEANUP', `评测运行清扫失败，服务继续启动：${String(err)}`)
+  }
   try {
     await store.ensureBucket()
     logInfo('I_OBJECT_STORE', `对象存储就绪：${config.s3Bucket}`)

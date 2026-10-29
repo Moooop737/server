@@ -4,13 +4,14 @@
  * 并发跑全部叶子、逐个 try/catch：单项抛错转 ok:false 并留 detail，不炸掉整体响应。
  * 整份结果缓存 CacheTtlMs（默认 5s），期内直接复用缓存体与状态码，避免频繁真实探测；未做并发去重。
  * ollama 模型名带 tag（如 qwenembed:latest）而 EMBEDDING_MODEL 是裸名，故就绪判定须同时匹配裸名与 `${emb}:` 前缀。
+ * eval 组：共享模式恒 ok 并标 mode=shared（主库同一池已由 postgres 组覆盖，不重复探）；隔离模式才真 ping 评测库。
  */
 
 import { Hono } from 'hono'
 import { ollamaHealthCheck, ollamaModelList, ollamaStatusList } from '../adapter/contract'
 
 export { createHealthRoute, createHealthServices }
-export type { HealthCheck, HealthService, ProbeResult }
+export type { EvalProbe, HealthCheck, HealthService, ProbeResult }
 
 import type { AppConfig } from '../config'
 import type { ObjectStore, Repo } from '../adapter/contract'
@@ -31,6 +32,11 @@ interface HealthService {
   checks: HealthCheck[]
 }
 
+interface EvalProbe {
+  mode: 'shared' | 'isolated'
+  ping: () => Promise<boolean>
+}
+
 interface ServiceResult {
   ok: boolean
   checks: Record<string, ProbeResult>
@@ -42,7 +48,7 @@ interface CachedResponse {
   body: { status: 'ok' | 'degraded'; services: Record<string, ServiceResult> }
 }
 
-function createHealthServices(Config: AppConfig, Repo: Repo, Store: ObjectStore): HealthService[] {
+function createHealthServices(Config: AppConfig, Repo: Repo, Store: ObjectStore, Eval: EvalProbe): HealthService[] {
   const base = Config.ollamaBaseUrl
   const emb = Config.embeddingModel.includes(':') ? Config.embeddingModel.slice(Config.embeddingModel.indexOf(':') + 1) : Config.embeddingModel
 
@@ -53,6 +59,21 @@ function createHealthServices(Config: AppConfig, Repo: Repo, Store: ObjectStore)
         {
           name: 'ping',
           ping: async () => ({ ok: await Repo.ping() }),
+        },
+      ],
+    },
+    {
+      name: 'eval',
+      checks: [
+        {
+          name: 'connection',
+          ping: async () => {
+            if (Eval.mode === 'shared') {
+              return { ok: true, detail: ['mode=shared', 'same db as postgres'] }
+            }
+            const reachable = await Eval.ping()
+            return { ok: reachable, detail: ['mode=isolated', reachable ? 'reachable' : 'unreachable'] }
+          },
         },
       ],
     },

@@ -2,7 +2,8 @@
  * 基础层唯一的对外门 —— 别盒只准从这里 import（AD-6：adapter/ 用单一 contract.ts 门，不逐盒建）。
  * 门只交服务、不交连接：DbHandle 造池，PostgresRepo 持有池与 Drizzle 实例；Pool 与 SQL 文本仍不出 repo/（AD-3），
  * 所以这里不出现 `pg`，也没有「借一条连接」的原语可导出。
- * Repo 按用例分组：资源/分块、会话/消息、检索候选、trace 写入；CRUD 的 HTTP 投影由 routes/crud.ts 统一注册 hono-crud。
+ * Repo 按用例分组：资源/分块、会话/消息、检索候选、trace 写入、评测题集/配置；CRUD 的 HTTP 投影由 routes/crud.ts 统一注册 hono-crud。
+ * EvalPostgresRepo 是同一套 Repo 方法换评测库的池（继承 PostgresRepo）；只在隔离模式构造，共享模式评测世界直接用 PostgresRepo。
  * Codebases 是独立领域：PostgresCodebaseRepo 只交 CodebaseRepo 接口，不复用 Repo 的资源方法，也不进 hono-crud。
  * ChunkCandidate 就是检索命中去掉名次分那一位 —— score 由融合侧产出，不该由基础层造，
  * 所以两条候选查询交出 ChunkCandidate，retrieve/search/ 的两个适配器补上 score: 0 再交给 Retriever。
@@ -32,11 +33,13 @@
  * 实体形状不再有跨层共享盒（原 `types/` 已删）：别盒要用哪一位，由本门逐个点名交出（现交 Resource 与四张 Drizzle 表）。
  */
 
-export { RetrieverHandle, PostgresRepo, PostgresCodebaseRepo, EmbeddingHandle, ChatHandle, ObjectStoreHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, embedChunks }
+export { RetrieverHandle, PostgresRepo, EvalPostgresRepo, PostgresCodebaseRepo, EmbeddingHandle, ChatHandle, ObjectStoreHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, embedChunks }
 export { resources, sessions, messages, traces } from './repo/orm/schema'
 export { listChatSessions, listChatTraces, getChatTrace } from './repo/observability'
 export { ObjectStoreError } from './storage/object-store'
-export type { Repo, CodebaseRepo, ChunkCandidate, Resource, ResourceStatus, Message, Trace, TraceStage, TraceStageInput, TracePayloads, TracePayloadOmitReason, RegistedProviders, RegistedModels }
+export type { Repo, CodebaseRepo, ChunkCandidate, Resource, ResourceStatus, ResourceCounts, Message, Trace, TraceStage, TraceStageInput, TracePayloads, TracePayloadOmitReason, RegistedProviders, RegistedModels }
+export type { EvalDataset, EvalCase, EvalGold, EvalAssertion, EvalAssertions, EvalConfig, EvalConfigKind, EvalCaseInput } from './repo/eval'
+export type { EvalRun, EvalRunStatus, EvalRunSnapshot, EvalRunCaseSnapshot, EvalRunResult, EvalHumanResult, EvalVerdict, EvalAssertionCheck, EvalAssertionResult, EvalJudgeResult, EvalCitation } from './repo/eval-run'
 export type { Codebase, CodebaseEntry, CodebaseStatus } from './repo/codebase'
 export type { ChatSessionSummary, ChatTraceSummary } from './repo/observability'
 export type { ObjectStore, ObjectStat, ObjectBody, ObjectGetOptions, ObjectPresignOptions, ObjectPresignPutOptions } from './storage/object-store'
@@ -45,23 +48,33 @@ import 'reflect-metadata'
 import { inject, singleton } from 'tsyringe'
 import { pingDb } from './connection/pool'
 import { DbHandle } from './connection/db'
+import { EvalDbHandle } from './connection/eval-db'
 import { createOrm } from './repo/orm/client'
 import {
   createResource, updateResourceStatus, updateResourceTitle, softDeleteResource, markResourceUploaded, restoreResource,
   getResource, getResourceIncludingDeleted, getResourceByContentHash, findActiveBySource, dataUriExists, resourceCounts, markStaleOnBoot,
-  listDeletedResources, purgeResource,
+  listDeletedResources, purgeResource, listResourcesByUriSuffix,
 } from './repo/resource'
 import {
   createCodebase, getCodebase, listCodebases, updateCodebaseStatus, markCodebaseReady, deleteCodebase,
   codebaseDataUriExists, markStaleCodebases,
 } from './repo/codebase'
-import { writeChunksWithEmbeddings, deleteChunksByResource, getChunksPage } from './repo/chunk'
+import { writeChunksWithEmbeddings, deleteChunksByResource, getChunksPage, getChunkByIndex } from './repo/chunk'
 import { dimensionsInStore, vectorCandidates } from './repo/search-vector'
 import { lexicalCandidates } from './repo/search-lexical'
 import { insertTrace, finishTrace, setTraceSession, setTraceResource, getTrace, insertTraceStage, listTraceStages } from './repo/trace'
 import { listChatSessions, listChatTraces, getChatTrace } from './repo/observability'
 import { getSession } from './repo/session'
 import { createMessage, getMessagesBySession } from './repo/message'
+import {
+  listDatasets, getDataset, createDataset, updateDataset, setDatasetBaseline, countRunsOfDataset, deleteDataset, duplicateDataset,
+  listCases, getCase, createCase, updateCase, deleteCase, nextCaseKey, upsertCase,
+  listConfigs, getConfig, createConfig, updateConfig, deleteConfig, duplicateConfig,
+} from './repo/eval'
+import {
+  createRun, getRun, listRuns, appendRunResult, setHumanResult, startRun, finishRun, cancelQueuedRun,
+  markInterruptedRuns, deleteRun, getChunkByDataUri,
+} from './repo/eval-run'
 import { ollamaHealthCheck, ollamaModelList, ollamaStatusList } from './connection/ollama'
 import { type ProviderEntryName } from './provider/registry'
 import { ModelRegistry, type EmbeddingModelId, type LanguageModelId } from './model/registry'
@@ -78,6 +91,8 @@ import type { Session } from './repo/session'
 import type { Message } from './repo/message'
 import type { ChatSessionSummary, ChatTraceSummary } from './repo/observability'
 import type { Orm } from './repo/orm/client'
+import type { EvalDataset, EvalCase, EvalConfig, EvalConfigKind, EvalCaseInput } from './repo/eval'
+import type { EvalRun, EvalRunSnapshot, EvalRunResult, EvalHumanResult } from './repo/eval-run'
 import type { TraceStart, TraceFinish, TracePayloads, TracePayloadOmitReason, Trace, TraceStage, TraceStageInput } from './repo/trace'
 import type { EmbeddingModelV4, LanguageModelV4, ProviderV4 } from '@ai-sdk/provider';
 import type { Retriever, RetrieverRecipe } from '../retrieve/contracts';
@@ -108,6 +123,8 @@ interface Repo {
   findActiveBySource(Url: string): Promise<Resource | null>
   dataUriExists(Uri: string): Promise<boolean>
   softDeleteResource(Id: string): Promise<boolean>
+  listResourcesByUriSuffix(Suffix: string): Promise<Resource[]>
+  getChunkByIndex(ResourceId: string, ChunkIndex: number): Promise<Chunk | null>
 
   writeChunksWithEmbeddings(
     ResourceId: string,
@@ -132,6 +149,40 @@ interface Repo {
   listChatSessions(Offset: number, Limit: number): Promise<{ Items: ChatSessionSummary[]; TotalCount: number }>
   listChatTraces(SessionId: string | null, Offset: number, Limit: number): Promise<{ Items: ChatTraceSummary[]; TotalCount: number }>
   getChatTrace(TraceId: string): Promise<ChatTraceSummary | null>
+
+  listDatasets(): Promise<EvalDataset[]>
+  getDataset(Id: string): Promise<EvalDataset | null>
+  createDataset(Data: { name: string; note: string }): Promise<EvalDataset>
+  updateDataset(Id: string, Data: { name: string; note: string }): Promise<EvalDataset | null>
+  setDatasetBaseline(Id: string, RunId: string): Promise<EvalDataset | null>
+  countRunsOfDataset(DatasetId: string): Promise<number>
+  deleteDataset(Id: string): Promise<boolean>
+  duplicateDataset(Id: string): Promise<EvalDataset | null>
+  listCases(DatasetId: string): Promise<EvalCase[]>
+  getCase(Id: string): Promise<EvalCase | null>
+  createCase(DatasetId: string, Data: EvalCaseInput): Promise<EvalCase>
+  updateCase(Id: string, Data: Omit<EvalCaseInput, 'case_key'>): Promise<EvalCase | null>
+  deleteCase(Id: string): Promise<boolean>
+  nextCaseKey(DatasetId: string, Level: string): Promise<string>
+  upsertCase(DatasetId: string, Data: EvalCaseInput & { case_key: string }): Promise<EvalCase>
+  listConfigs(Kind: EvalConfigKind): Promise<EvalConfig[]>
+  getConfig(Id: string): Promise<EvalConfig | null>
+  createConfig(Data: { kind: EvalConfigKind; name: string; config: Record<string, unknown> }): Promise<EvalConfig>
+  updateConfig(Id: string, Data: { name: string; config: Record<string, unknown> }): Promise<EvalConfig | null>
+  deleteConfig(Id: string): Promise<boolean>
+  duplicateConfig(Id: string): Promise<EvalConfig | null>
+
+  createRun(Data: { dataset_id: string; run_config_id: string; metric_config_id: string; snapshot: EvalRunSnapshot }): Promise<EvalRun>
+  getRun(Id: string): Promise<EvalRun | null>
+  listRuns(DatasetId: string | null): Promise<EvalRun[]>
+  appendRunResult(Id: string, Result: EvalRunResult): Promise<boolean>
+  setHumanResult(RunId: string, Entry: EvalHumanResult): Promise<EvalHumanResult[] | null>
+  startRun(Id: string): Promise<boolean>
+  finishRun(Id: string, Status: 'done' | 'failed' | 'cancelled', Data: { duration_ms: number; error_reason?: string | null }): Promise<boolean>
+  cancelQueuedRun(Id: string): Promise<boolean>
+  markInterruptedRuns(): Promise<number>
+  deleteRun(Id: string): Promise<boolean>
+  getChunkByDataUri(Uri: string, ChunkIndex: number): Promise<Chunk | null>
 }
 
 interface CodebaseRepo {
@@ -299,6 +350,14 @@ class PostgresRepo implements Repo {
     return softDeleteResource(this.db, Id)
   }
 
+  listResourcesByUriSuffix(Suffix: string) {
+    return listResourcesByUriSuffix(this.db, Suffix)
+  }
+
+  getChunkByIndex(ResourceId: string, ChunkIndex: number) {
+    return getChunkByIndex(this.db, ResourceId, ChunkIndex)
+  }
+
   writeChunksWithEmbeddings(
     ResourceId: string,
     Chunks: Pick<Chunk, 'chunk_index' | 'content' | 'start_offset' | 'end_offset'>[],
@@ -365,6 +424,141 @@ class PostgresRepo implements Repo {
 
   getChatTrace(TraceId: string) {
     return getChatTrace(this.db, TraceId)
+  }
+
+  listDatasets() {
+    return listDatasets(this.db)
+  }
+
+  getDataset(Id: string) {
+    return getDataset(this.db, Id)
+  }
+
+  createDataset(Data: { name: string; note: string }) {
+    return createDataset(this.db, Data)
+  }
+
+  updateDataset(Id: string, Data: { name: string; note: string }) {
+    return updateDataset(this.db, Id, Data)
+  }
+
+  setDatasetBaseline(Id: string, RunId: string) {
+    return setDatasetBaseline(this.db, Id, RunId)
+  }
+
+  countRunsOfDataset(DatasetId: string) {
+    return countRunsOfDataset(this.db, DatasetId)
+  }
+
+  deleteDataset(Id: string) {
+    return deleteDataset(this.db, Id)
+  }
+
+  duplicateDataset(Id: string) {
+    return duplicateDataset(this.db, Id)
+  }
+
+  listCases(DatasetId: string) {
+    return listCases(this.db, DatasetId)
+  }
+
+  getCase(Id: string) {
+    return getCase(this.db, Id)
+  }
+
+  createCase(DatasetId: string, Data: EvalCaseInput) {
+    return createCase(this.db, DatasetId, Data)
+  }
+
+  updateCase(Id: string, Data: Omit<EvalCaseInput, 'case_key'>) {
+    return updateCase(this.db, Id, Data)
+  }
+
+  deleteCase(Id: string) {
+    return deleteCase(this.db, Id)
+  }
+
+  nextCaseKey(DatasetId: string, Level: string) {
+    return nextCaseKey(this.db, DatasetId, Level)
+  }
+
+  upsertCase(DatasetId: string, Data: EvalCaseInput & { case_key: string }) {
+    return upsertCase(this.db, DatasetId, Data)
+  }
+
+  listConfigs(Kind: EvalConfigKind) {
+    return listConfigs(this.db, Kind)
+  }
+
+  getConfig(Id: string) {
+    return getConfig(this.db, Id)
+  }
+
+  createConfig(Data: { kind: EvalConfigKind; name: string; config: Record<string, unknown> }) {
+    return createConfig(this.db, Data)
+  }
+
+  updateConfig(Id: string, Data: { name: string; config: Record<string, unknown> }) {
+    return updateConfig(this.db, Id, Data)
+  }
+
+  deleteConfig(Id: string) {
+    return deleteConfig(this.db, Id)
+  }
+
+  duplicateConfig(Id: string) {
+    return duplicateConfig(this.db, Id)
+  }
+
+  createRun(Data: { dataset_id: string; run_config_id: string; metric_config_id: string; snapshot: EvalRunSnapshot }) {
+    return createRun(this.db, Data)
+  }
+
+  getRun(Id: string) {
+    return getRun(this.db, Id)
+  }
+
+  listRuns(DatasetId: string | null) {
+    return listRuns(this.db, DatasetId)
+  }
+
+  appendRunResult(Id: string, Result: EvalRunResult) {
+    return appendRunResult(this.db, Id, Result)
+  }
+
+  startRun(Id: string) {
+    return startRun(this.db, Id)
+  }
+
+  finishRun(Id: string, Status: 'done' | 'failed' | 'cancelled', Data: { duration_ms: number; error_reason?: string | null }) {
+    return finishRun(this.db, Id, Status, Data)
+  }
+
+  cancelQueuedRun(Id: string) {
+    return cancelQueuedRun(this.db, Id)
+  }
+
+  markInterruptedRuns() {
+    return markInterruptedRuns(this.db)
+  }
+
+  deleteRun(Id: string) {
+    return deleteRun(this.db, Id)
+  }
+
+  setHumanResult(RunId: string, Entry: EvalHumanResult) {
+    return setHumanResult(this.db, RunId, Entry)
+  }
+
+  getChunkByDataUri(Uri: string, ChunkIndex: number) {
+    return getChunkByDataUri(this.db, Uri, ChunkIndex)
+  }
+}
+
+@singleton()
+class EvalPostgresRepo extends PostgresRepo {
+  constructor(@inject(AppConfig) Config: AppConfig) {
+    super(new EvalDbHandle(Config))
   }
 }
 

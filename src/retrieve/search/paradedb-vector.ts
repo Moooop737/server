@@ -25,10 +25,11 @@ class ParadeDbVectorSearch implements VectorSearcher {
     this.minSimilarity = minSimilarity
   }
 
-  async search(QueryVector: number[], Limit: number): Promise<RetrievedChunk[]> {
+  async search(QueryVector: number[], Limit: number, MinSimilarity?: number): Promise<RetrievedChunk[]> {
+    const Threshold = MinSimilarity ?? this.minSimilarity
     const candidates = await this.repo.vectorCandidates(QueryVector, Limit, this.dimension)
     return candidates
-      .filter((candidate) => candidate.similarity !== null && candidate.similarity >= this.minSimilarity)
+      .filter((candidate) => candidate.similarity !== null && candidate.similarity >= Threshold)
       .map((candidate) => ({ ...candidate, score: 0 }))
   }
 }

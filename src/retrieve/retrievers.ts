@@ -95,16 +95,21 @@ class RetrieverFactory {
       )
       const vectorHash = hashVector(queryVector)
 
+      const VectorTopK = Options?.vectorTopK ?? Deps.config.retrievalVectorTopK
+      const LexicalTopK = Options?.lexicalTopK ?? Deps.config.retrievalLexicalTopK
+      const MinSimilarity = Options?.minSimilarity ?? Deps.config.retrievalMinSimilarity
+      const RrfK = Options?.rrfK ?? Deps.config.retrievalRrfK
+
       const vectorHits = await runStage(
         Sink,
         'vector_recall',
         {
           vector_hash: vectorHash,
-          top_k: Deps.config.retrievalVectorTopK,
-          min_similarity: Deps.config.retrievalMinSimilarity,
+          top_k: VectorTopK,
+          min_similarity: MinSimilarity,
           dimension: queryVector.length,
         },
-        () => vector.search(queryVector, Deps.config.retrievalVectorTopK),
+        () => vector.search(queryVector, VectorTopK, MinSimilarity),
         (Hits) => ({
           candidates: Hits.map((Hit, Index) => ({ chunk_id: Hit.chunk.id, similarity: Hit.similarity, rank: Index + 1 })),
         }),
@@ -114,8 +119,8 @@ class RetrieverFactory {
         ? await runStage(
           Sink,
           'bm25_recall',
-          { query: trimmed, top_k: Deps.config.retrievalLexicalTopK },
-          () => lexical.search(trimmed, Deps.config.retrievalLexicalTopK),
+          { query: trimmed, top_k: LexicalTopK },
+          () => lexical.search(trimmed, LexicalTopK),
           (Hits) => ({
             candidates: Hits.map((Hit, Index) => ({ chunk_id: Hit.chunk.id, lexical_score: Hit.lexicalScore, rank: Index + 1 })),
           }),
@@ -128,9 +133,9 @@ class RetrieverFactory {
         {
           vector: vectorHits.map((Hit, Index) => ({ chunk_id: Hit.chunk.id, rank: Index + 1 })),
           lexical: lexicalHits.map((Hit, Index) => ({ chunk_id: Hit.chunk.id, rank: Index + 1 })),
-          k: Deps.config.retrievalRrfK,
+          k: RrfK,
         },
-        async () => fuser.fuse({ vector: vectorHits, lexical: lexicalHits }, Options?.limit),
+        async () => fuser.fuse({ vector: vectorHits, lexical: lexicalHits }, Options?.limit, RrfK),
         (Result) => ({
           hits: Result.hits.map((Hit) => ({ chunk_id: Hit.chunk.id, rrf_score: Hit.score })),
           vector_count: Result.vectorCount,

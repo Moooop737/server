@@ -35,7 +35,7 @@ interface RetrieverRecipe {
 }
 
 interface VectorSearcher {
-  search(QueryVector: number[], Limit: number): Promise<RetrievedChunk[]>
+  search(QueryVector: number[], Limit: number, MinSimilarity?: number): Promise<RetrievedChunk[]>
 }
 
 interface LexicalSearcher {
@@ -43,7 +43,7 @@ interface LexicalSearcher {
 }
 
 interface Fuser {
-  fuse(Lists: { vector: RetrievedChunk[]; lexical: RetrievedChunk[] }, Limit?: number): RetrievalResult
+  fuse(Lists: { vector: RetrievedChunk[]; lexical: RetrievedChunk[] }, Limit?: number, RrfK?: number): RetrievalResult
 }
 
 interface RetrieverStageRegistry {
@@ -69,4 +69,8 @@ interface Retriever {
 interface SearchOptions {
   limit?: number
   sink?: StageSink
+  vectorTopK?: number
+  lexicalTopK?: number
+  minSimilarity?: number
+  rrfK?: number
 }

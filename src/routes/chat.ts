@@ -1,6 +1,8 @@
 /**
  * 问答路由 —— POST /chat，body { query, sessionId, model? }。薄一层：校验 body、确认会话存在、把提问交给 ChatService、把结果转成 UI message stream。
- * model 可选：缺省用 CHAT_MODEL 那只；给了但不在册→400 E_UNKNOWN_MODEL，响应带在册清单。
+ * model 可选：body 给了以 body 为准；没给就用会话行记录的 model；都没有才用 CHAT_MODEL。
+ *   body 给了但不在册→400 E_UNKNOWN_MODEL，响应带在册清单；会话记录的那只不在册（缺 Key 整行缺席）→ 回落 CHAT_MODEL 并打 W_SESSION_MODEL。
+ *   /chat 只读会话的 model，不写：下单一位是前端（建会话/换模型时 PATCH）。
  * 历史由 ChatService 按 sessionId 读库（服务端真源），模型自己看历史决定检索词；本路由不收 messages、不做查询改写。
  * 检索发生在工具里（agent/tool/retrieve.ts），由模型自己决定调不调、检索什么词、要几条；本路由因此不装配 Retriever，
  *   也没有维度相关的状态码：工具一执行就在 SSE 首帧之后，状态码是一次性的，库中混维只能作为工具的结构化 error 交给模型。
@@ -14,7 +16,7 @@ import { Hono } from 'hono'
 import { inject, injectable } from 'tsyringe'
 import { ChatHandle, PostgresRepo } from '../adapter/contract'
 import { ChatService } from '../agent/chat/chat'
-import { logError } from '../trace/systemtrace/log'
+import { logError, logWarn } from '../trace/systemtrace/log'
 
 export { ChatRoute }
 
@@ -53,14 +55,19 @@ class ChatRoute {
       if (!uuidOk(body.sessionId)) {
         return c.json({ code: 'E_BAD_ID', message: 'sessionId 需为 UUID' }, 400)
       }
-      const Model = body.model === undefined ? undefined : this.handle.resolve(body.model)
-      if (body.model !== undefined && Model === undefined) {
+      const Requested = body.model === undefined ? undefined : this.handle.resolve(body.model)
+      if (body.model !== undefined && Requested === undefined) {
         return c.json({ code: 'E_UNKNOWN_MODEL', message: `模型 ${body.model} 不在册`, models: this.handle.catalog() }, 400)
       }
 
       try {
-        if (!(await this.repo.getSession(body.sessionId))) {
+        const Session = await this.repo.getSession(body.sessionId)
+        if (!Session) {
           return c.json({ code: 'E_SESSION_NOT_FOUND', message: '会话不存在或已删除' }, 404)
+        }
+        const Model = Requested ?? (Session.model === null ? undefined : this.handle.resolve(Session.model))
+        if (Requested === undefined && Session.model !== null && Model === undefined) {
+          logWarn('W_SESSION_MODEL', `会话 ${Session.id} 记录的模型 ${Session.model} 不在册，本轮回落 CHAT_MODEL`)
         }
         return await this.chat.ask(query, body.sessionId, c.req.raw.signal, Model)
       } catch (err) {

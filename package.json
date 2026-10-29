@@ -9,7 +9,10 @@
     "dev": "tsx watch --env-file=.env src/index.ts",
     "start": "tsx --env-file=.env src/index.ts",
     "db:schema": "node --env-file=.env scripts/db-schema.mjs",
-    "eval:probe": "tsx --env-file=.env scripts/eval-probe.ts"
+    "eval:probe": "tsx --env-file=.env scripts/eval-probe.ts",
+    "eval:db:setup": "tsx --env-file=.env scripts/eval-db-setup.ts",
+    "eval:seed": "tsx --env-file=.env scripts/eval-seed.ts",
+    "eval:cases:import": "tsx --env-file=.env scripts/eval-cases-import.ts"
   },
   "keywords": [],
   "author": "",

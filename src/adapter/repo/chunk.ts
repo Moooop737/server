@@ -5,7 +5,7 @@
  * number[] ↔ halfvec 字面量字符串的转换住本层（vecToHalfvecStr），不外漏；Embedding 只有写侧。
  */
 
-export { getChunksPage, writeChunksWithEmbeddings, deleteChunksByResource, rowToChunk }
+export { getChunksPage, writeChunksWithEmbeddings, deleteChunksByResource, rowToChunk, getChunkByIndex }
 export type { Chunk, ChunkPage, Embedding }
 
 import type { Pool } from 'pg'
@@ -155,6 +155,14 @@ async function writeChunksWithEmbeddings(
 // 删 chunk；embedding 经 FK source_id→chunks.id ON DELETE CASCADE 随之删除，无孤儿向量
 async function deleteChunksByResource(Db: Pool, ResourceId: string): Promise<void> {
   await Db.query(`DELETE FROM chunks WHERE resource_id = $1`, [ResourceId])
+}
+
+async function getChunkByIndex(Db: Pool, ResourceId: string, ChunkIndex: number): Promise<Chunk | null> {
+  const { rows } = await Db.query(
+    `SELECT * FROM chunks WHERE resource_id = $1 AND chunk_index = $2 AND deleted_at IS NULL LIMIT 1`,
+    [ResourceId, ChunkIndex],
+  )
+  return rows[0] ? rowToChunk(rows[0]) : null
 }
 
 /** number[] → pg halfvec 字面量字符串 '[0.1,0.2,...]' */

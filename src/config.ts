@@ -6,6 +6,7 @@
  * embeddingDimensions 非 1024 不阻断、仅 warn：P1 只建 1024 档 partial HNSW，其它维度检索退顺序扫描（结果仍对、只是慢）。见 addendum A / AD-4。
  * CHAT_MODEL 与另外三个是必需项（缺失走 E_CONFIG_MISSING），值是 `${provider}:${modelId}` 复合键，但本文件不校验它在不在 model 清单里——那由 ChatHandle 的构造点名（E_CHAT_MODEL）；服务商与它的 Key 归 adapter/provider 登记表，本文件不再认 CHAT_PROVIDER。host 固定 127.0.0.1（AD-8 仅本地监听）。
  * S3_* 是对象存储必需项；S3_ENDPOINT 必须等于浏览器访问 MinIO 的 Host（presign 的 Host 会被签进 URL），末尾斜杠会被去掉；S3_REGION 默认 us-east-1，S3_FORCE_PATH_STYLE 默认 true。密钥只进 AppConfig，不打印、不进错误信息。
+ * EVAL_DATABASE_URL 是可选开关：不设 = 评测跑主库（共享模式）；设了 = 评测世界用独立库（隔离模式）。见 eval/assembly.ts；不进 missing。
  */
 
 import 'reflect-metadata'
@@ -20,6 +21,7 @@ class AppConfig {
   readonly host = '127.0.0.1'
   readonly port: number
   readonly databaseUrl: string
+  readonly evalDatabaseUrl: string | null
   readonly ollamaBaseUrl: string
   readonly embeddingModel: string
   readonly embeddingDimensions: number
@@ -59,6 +61,7 @@ class AppConfig {
 
     this.port = numOrThrow(getEnv('PORT'), 'PORT', 3000, 1, 65535)
     this.databaseUrl = databaseUrl!
+    this.evalDatabaseUrl = getEnv('EVAL_DATABASE_URL') ?? null
     this.ollamaBaseUrl = ollamaBaseUrl!
 
     this.retrievalVectorTopK = numOrThrow(getEnv('RETRIEVAL_VECTOR_TOPK'), 'RETRIEVAL_VECTOR_TOPK', 10, 1, 100)

@@ -20,13 +20,15 @@ class RrfFuser implements Fuser {
 
   fuse(
     Lists: { vector: RetrievedChunk[]; lexical: RetrievedChunk[] },
-    Limit?: number
+    Limit?: number,
+    RrfK?: number
   ): RetrievalResult {
     const merged = new Map<string, RetrievedChunk>()
+    const K = RrfK ?? this.k
 
     for (const list of [Lists.vector, Lists.lexical]) {
       list.forEach((hit, index) => {
-        const contribution = 1 / (this.k + index + 1)
+        const contribution = 1 / (K + index + 1)
         const prev = merged.get(hit.chunk.id)
         if (prev) {
           prev.score += contribution

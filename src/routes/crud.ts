@@ -48,6 +48,7 @@ const Tables: TableEntry[] = [
     fields: z.object({
       title: z.string().trim().min(1).optional(),
       group_name: z.string().trim().min(1).nullable().optional(),
+      model: z.string().trim().min(1).nullable().optional(),
     }),
     endpoints: {
       list: {

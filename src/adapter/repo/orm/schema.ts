@@ -1,10 +1,10 @@
 /**
- * 由 `npm run db:schema` 生成，含四张 CRUD 表、codebases 与 trace_stages（仅 schema）；timestamptz 用 date 模式。
+ * 由 `npm run db:schema` 生成，含四张 CRUD 表、codebases、trace_stages 与四张 eval 表（仅 schema）；timestamptz 用 date 模式。
  * 索引归 dbmate；BM25/向量仍走 search-lexical/search-vector 的裸 SQL。
  * 不要手改。
  */
 
-import { pgTable, uniqueIndex, check, uuid, text, timestamp, bigint, foreignKey, jsonb, integer, pgEnum } from "drizzle-orm/pg-core"
+import { pgTable, uniqueIndex, check, uuid, text, timestamp, bigint, foreignKey, jsonb, integer, unique, boolean, pgEnum } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
 export const resource_status = pgEnum("resource_status", ['uploading', 'uploaded', 'processing', 'ready', 'upload_failed', 'process_failed'])
@@ -31,15 +31,6 @@ export const resources = pgTable("resources", {
 	check("resources_content_hash_sha256", sql`(content_hash IS NULL) OR (content_hash ~ '^[0-9a-f]{64}$'::text)`),
 ]);
 
-export const sessions = pgTable("sessions", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	title: text().notNull(),
-	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
-	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
-	deleted_at: timestamp({ withTimezone: true, mode: 'date' }),
-	group_name: text(),
-});
-
 export const messages = pgTable("messages", {
 	id: uuid().defaultRandom().primaryKey().notNull(),
 	session_id: uuid().notNull(),
@@ -59,6 +50,16 @@ export const messages = pgTable("messages", {
 		}).onDelete("cascade"),
 	check("messages_role_check", sql`role = ANY (ARRAY['user'::text, 'assistant'::text])`),
 ]);
+
+export const sessions = pgTable("sessions", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	title: text().notNull(),
+	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	deleted_at: timestamp({ withTimezone: true, mode: 'date' }),
+	group_name: text(),
+	model: text(),
+});
 
 export const trace_stages = pgTable("trace_stages", {
 	id: uuid().defaultRandom().primaryKey().notNull(),
@@ -120,4 +121,94 @@ export const codebases = pgTable("codebases", {
 	check("codebases_manifest_array", sql`jsonb_typeof(manifest) = 'array'::text`),
 	check("codebases_file_count_nonnegative", sql`file_count >= 0`),
 	check("codebases_declared_uncompressed_nonnegative", sql`declared_uncompressed_bytes >= 0`),
+]);
+
+export const eval_datasets = pgTable("eval_datasets", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	name: text().notNull(),
+	note: text().default('').notNull(),
+	baseline_run_id: uuid(),
+	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+}, (table) => [
+	uniqueIndex("eval_datasets_name_uidx").using("btree", table.name.asc().nullsLast().op("text_ops")),
+	check("eval_datasets_name_nonempty", sql`btrim(name) <> ''::text`),
+]);
+
+export const eval_cases = pgTable("eval_cases", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	dataset_id: uuid().notNull(),
+	case_key: text().notNull(),
+	level: text().notNull(),
+	query: text().notNull(),
+	negative: boolean().default(false).notNull(),
+	note: text().default('').notNull(),
+	gold: jsonb().default([]).notNull(),
+	assertions: jsonb().default({ expect: [], reject: [] }).notNull(),
+	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+}, (table) => [
+	foreignKey({
+			columns: [table.dataset_id],
+			foreignColumns: [eval_datasets.id],
+			name: "eval_cases_dataset_id_fkey"
+		}).onDelete("cascade"),
+	unique("eval_cases_dataset_key_unique").on(table.dataset_id, table.case_key),
+	check("eval_cases_case_key_nonempty", sql`btrim(case_key) <> ''::text`),
+	check("eval_cases_level_nonempty", sql`btrim(level) <> ''::text`),
+	check("eval_cases_query_nonempty", sql`btrim(query) <> ''::text`),
+	check("eval_cases_gold_array", sql`jsonb_typeof(gold) = 'array'::text`),
+	check("eval_cases_negative_empty_gold", sql`(NOT negative) OR (gold = '[]'::jsonb)`),
+	check("eval_cases_assertions_object", sql`jsonb_typeof(assertions) = 'object'::text`),
+	check("eval_cases_assertions_shape", sql`(jsonb_typeof(assertions -> 'expect'::text) = 'array'::text) AND (jsonb_typeof(assertions -> 'reject'::text) = 'array'::text)`),
+]);
+
+export const eval_configs = pgTable("eval_configs", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	kind: text().notNull(),
+	name: text().notNull(),
+	config: jsonb().notNull(),
+	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+}, () => [
+	check("eval_configs_kind_check", sql`kind = ANY (ARRAY['run'::text, 'metric'::text])`),
+	check("eval_configs_name_nonempty", sql`btrim(name) <> ''::text`),
+	check("eval_configs_config_object", sql`jsonb_typeof(config) = 'object'::text`),
+]);
+
+export const eval_runs = pgTable("eval_runs", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	dataset_id: uuid().notNull(),
+	status: text().default('queued').notNull(),
+	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	run_config_id: uuid(),
+	metric_config_id: uuid(),
+	snapshot: jsonb().default({}).notNull(),
+	results: jsonb().default([]).notNull(),
+	human_results: jsonb().default([]).notNull(),
+	started_at: timestamp({ withTimezone: true, mode: 'date' }),
+	ended_at: timestamp({ withTimezone: true, mode: 'date' }),
+	duration_ms: integer(),
+	error_reason: text(),
+}, (table) => [
+	foreignKey({
+			columns: [table.dataset_id],
+			foreignColumns: [eval_datasets.id],
+			name: "eval_runs_dataset_id_fkey"
+		}).onDelete("restrict"),
+	foreignKey({
+			columns: [table.run_config_id],
+			foreignColumns: [eval_configs.id],
+			name: "eval_runs_run_config_id_fkey"
+		}).onDelete("set null"),
+	foreignKey({
+			columns: [table.metric_config_id],
+			foreignColumns: [eval_configs.id],
+			name: "eval_runs_metric_config_id_fkey"
+		}).onDelete("set null"),
+	check("eval_runs_status_check", sql`status = ANY (ARRAY['queued'::text, 'running'::text, 'done'::text, 'failed'::text, 'cancelled'::text])`),
+	check("eval_runs_snapshot_object", sql`jsonb_typeof(snapshot) = 'object'::text`),
+	check("eval_runs_results_array", sql`jsonb_typeof(results) = 'array'::text`),
+	check("eval_runs_human_results_array", sql`jsonb_typeof(human_results) = 'array'::text`),
+	check("eval_runs_duration_nonnegative", sql`(duration_ms IS NULL) OR (duration_ms >= 0)`),
 ]);

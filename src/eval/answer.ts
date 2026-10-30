@@ -5,16 +5,22 @@
  */
 
 export { answerCase }
-export type { AnswerOutcome }
+export type { AnswerOutcome, AnswerOptions }
 
 import { generateText, stepCountIs } from 'ai'
 import { INSTRUCTIONS } from '../agent/prompt/instruction'
+import { AGENT_STEP_LIMIT } from '../agent/step-limit'
 import { buildAgentTools } from '../agent/tool/registry'
 
 import type { LanguageModelV4 } from '@ai-sdk/provider'
 import type { EvalCitation } from '../adapter/contract'
-import type { RetrievedHit } from '../agent/tool/contracts'
+import type { AgentToolOptions, RetrievedHit } from '../agent/tool/contracts'
 import type { Retriever } from '../retrieve/contracts'
+
+interface AnswerOptions {
+  temperature?: number
+  search?: AgentToolOptions['search']
+}
 
 interface AnswerOutcome {
   answer: string
@@ -22,14 +28,15 @@ interface AnswerOutcome {
   error: string | null
 }
 
-async function answerCase(Model: LanguageModelV4, Retriever: Retriever, Query: string): Promise<AnswerOutcome> {
+async function answerCase(Model: LanguageModelV4, Retriever: Retriever, Query: string, Options: AnswerOptions = {}): Promise<AnswerOutcome> {
   try {
     const Result = await generateText({
       model: Model,
       instructions: INSTRUCTIONS,
       messages: [{ role: 'user', content: Query }],
-      tools: buildAgentTools(Retriever),
-      stopWhen: stepCountIs(5),
+      tools: buildAgentTools(Retriever, { trace: false, ...(Options.search === undefined ? {} : { search: Options.search }) }),
+      stopWhen: stepCountIs(AGENT_STEP_LIMIT),
+      ...(Options.temperature === undefined ? {} : { temperature: Options.temperature }),
     })
 
     const Citations: EvalCitation[] = []

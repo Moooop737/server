@@ -161,12 +161,13 @@ async function getRun(Db: Pool, Id: string): Promise<EvalRun | null> {
   return rows[0] ? rowToRun(rows[0]) : null
 }
 
-async function listRuns(Db: Pool, DatasetId: string | null): Promise<EvalRun[]> {
+async function listRuns(Db: Pool, DatasetId: string | null, RunConfigId: string | null = null): Promise<EvalRun[]> {
   const { rows } = await Db.query(
     `SELECT * FROM eval_runs
       WHERE ($1::uuid IS NULL OR dataset_id = $1)
+        AND ($2::uuid IS NULL OR run_config_id = $2)
       ORDER BY created_at DESC, id DESC`,
-    [DatasetId],
+    [DatasetId, RunConfigId],
   )
   return rows.map(rowToRun)
 }

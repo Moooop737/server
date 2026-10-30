@@ -5,7 +5,7 @@
  * 失败不抛：回 error 让该 case 继续，run 不因 judge 单条失败而中断。
  */
 
-export { resolveRubric, judgeCase, RUBRIC_V1 }
+export { resolveRubric, judgeCase, verdictOfScores, RUBRIC_V1 }
 export type { Rubric }
 
 import { generateText, Output } from 'ai'
@@ -23,7 +23,7 @@ const RUBRIC_V1 = `你是知识库问答的评分员。只根据「检索片段�
 三个维度各打 0/1/2 分：
 - groundedness（有据）：0 = 有明显编造；1 = 部分有据、部分无据；2 = 全部陈述都能在片段找到依据。
 - correctness（正确）：0 = 答错或答偏；1 = 部分正确；2 = 正确且完整回答问题。
-- citation（引用）：0 = 没有 [n] 标记或引用错片段；1 = 部分引用正确；2 = 所有引用都指向支持该句的片段。
+- citation（引用）：回答必须用命中片段的前 8 位 chunkId 在方括号里标注，片段也以相同的 8 位 id 标注。0 = 没有引用或引用的 id 不在片段里；1 = 部分引用正确；2 = 所有引用 id 都在片段里且支持该句。
 再给 verdict：三维都达到 2 分才 pass，任一维度低于 2 分就是 fail。
 reason 用一句中文说明理由。`
 
@@ -64,7 +64,7 @@ async function judgeCase(
       groundedness: Out.groundedness,
       correctness: Out.correctness,
       citation: Out.citation,
-      verdict: Out.verdict,
+      verdict: verdictOfScores(Out.groundedness, Out.correctness, Out.citation),
       reason: Out.reason,
       error: null,
     }
@@ -80,10 +80,14 @@ async function judgeCase(
   }
 }
 
+function verdictOfScores(Groundedness: number, Correctness: number, Citation: number): 'pass' | 'fail' {
+  return Groundedness === 2 && Correctness === 2 && Citation === 2 ? 'pass' : 'fail'
+}
+
 function judgePrompt(RubricText: string, Query: string, Answer: string, Citations: EvalCitation[]): string {
   const Snippets = Citations
     .slice(0, MAX_SNIPPETS)
-    .map((Item) => `[${Item.index}] ${Item.content.slice(0, MAX_SNIPPET_CHARS)}`)
+    .map((Item) => `[${Item.chunkId.slice(0, 8)}] ${Item.content.slice(0, MAX_SNIPPET_CHARS)}`)
     .join('\n\n')
   return `${RubricText}\n\n## 问题\n${Query}\n\n## 回答\n${Answer}\n\n## 检索片段\n${Snippets === '' ? '（没有检索到片段）' : Snippets}`
 }

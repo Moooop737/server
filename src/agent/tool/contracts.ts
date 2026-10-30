@@ -8,7 +8,20 @@
  *   chunkId 与 resourceId 留着：引用标记要按它们回链。
  */
 
-export type { RetrieveToolInput, RetrievedHit, RetrieveToolOutput }
+export type { RetrieveToolInput, RetrievedHit, RetrieveToolOutput, ToolSearchOverrides, AgentToolOptions }
+
+interface ToolSearchOverrides {
+  limit?: number
+  vectorTopK?: number
+  lexicalTopK?: number
+  minSimilarity?: number
+  rrfK?: number
+}
+
+interface AgentToolOptions {
+  trace?: boolean
+  search?: ToolSearchOverrides
+}
 
 interface RetrieveToolInput {
   prompt: string

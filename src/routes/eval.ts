@@ -380,8 +380,10 @@ function buildRuns(app: Hono, Deps: RunRouteDeps): Hono {
   app.get('/runs', async (c) => {
     const DatasetId = c.req.query('dataset_id')
     if (DatasetId !== undefined && !UUID_RE.test(DatasetId)) return bad(c, 'E_BAD_ID', 'dataset_id 需为 UUID')
+    const RunConfigId = c.req.query('run_config_id')
+    if (RunConfigId !== undefined && !UUID_RE.test(RunConfigId)) return bad(c, 'E_BAD_ID', 'run_config_id 需为 UUID')
     try {
-      const Runs = await repo.listRuns(DatasetId ?? null)
+      const Runs = await repo.listRuns(DatasetId ?? null, RunConfigId ?? null)
       return c.json({ runs: Runs.map(runListItem) })
     } catch (err) {
       logError('E_EVAL_RUN_LIST', String(err))
@@ -395,10 +397,7 @@ function buildRuns(app: Hono, Deps: RunRouteDeps): Hono {
     try {
       const Run = await repo.getRun(Id)
       if (Run === null) return notFound(c, '运行不存在')
-      const Mode = inferRunMode(Run.snapshot)
-      const Summary = Mode === 'answer'
-        ? summarizeAnswerResults(Run.results, Run.human_results, Run.snapshot.cases)
-        : summarizeResults(Run.results)
+      const { mode: Mode, summary: Summary } = summarizeForRun(Run)
       const Results = Mode === 'answer'
         ? Run.results.map((Item) => ({ ...Item, final_verdict: finalVerdict(Item, Run.human_results.find((Human) => Human.case_key === Item.case_key)) }))
         : Run.results
@@ -490,8 +489,25 @@ function buildRuns(app: Hono, Deps: RunRouteDeps): Hono {
   return app
 }
 
-function runListItem(Run: EvalRun) {
+function summarizeForRun(Run: EvalRun): { mode: ReturnType<typeof inferRunMode>; summary: ReturnType<typeof summarizeResults> | object } {
   const Mode = inferRunMode(Run.snapshot)
+  if (Mode === 'retrieval') return { mode: Mode, summary: summarizeResults(Run.results) }
+  const AnswerSummary = summarizeAnswerResults(Run.results, Run.human_results, Run.snapshot.cases)
+  return {
+    mode: Mode,
+    summary: {
+      recall: 0,
+      mrr: 0,
+      failed: AnswerSummary.failed,
+      duration_ms: AnswerSummary.duration_ms,
+      total: AnswerSummary.total,
+      answer: AnswerSummary,
+    },
+  }
+}
+
+function runListItem(Run: EvalRun) {
+  const { mode: Mode, summary: Summary } = summarizeForRun(Run)
   return {
     id: Run.id,
     dataset_id: Run.dataset_id,
@@ -504,7 +520,7 @@ function runListItem(Run: EvalRun) {
     error_reason: Run.error_reason,
     run_config_name: Run.snapshot?.run_config?.name ?? null,
     metric_config_name: Run.snapshot?.metric_config?.name ?? null,
-    summary: Mode === 'answer' ? summarizeAnswerResults(Run.results, Run.human_results, Run.snapshot.cases) : summarizeResults(Run.results),
+    summary: Summary,
   }
 }
 
@@ -680,7 +696,11 @@ function parseConfig(Kind: EvalConfigKind, Value: unknown, Models: Set<string>):
   if (Config.judge_model !== null && (typeof Config.judge_model !== 'string' || !Models.has(Config.judge_model))) {
     return { ok: false, message: 'judge_model 需为 null 或 /models 在册的键' }
   }
-  if (Config.rubric !== null && typeof Config.rubric !== 'string') return { ok: false, message: 'rubric 需为 null 或字符串' }
+  if (Config.rubric !== null) {
+    if (typeof Config.rubric !== 'string' || Config.rubric.trim() === '' || resolveRubric(Config.rubric) === null) {
+      return { ok: false, message: 'rubric 需为 null 或已登记的内置版本' }
+    }
+  }
   if (!Array.isArray(Config.metrics) || Config.metrics.length === 0) return { ok: false, message: 'metrics 需为非空字符串数组' }
   if (Config.metrics.some((Item) => typeof Item !== 'string' || Item.trim() === '')) {
     return { ok: false, message: 'metrics 需为非空字符串数组' }

@@ -275,12 +275,13 @@ async function deleteCase(Db: Pool, Id: string): Promise<boolean> {
 }
 
 async function upsertCase(Db: Pool, DatasetId: string, Data: EvalCaseInput & { case_key: string }): Promise<EvalCase> {
+  const AssertionClause = Data.assertions === undefined ? 'assertions = eval_cases.assertions' : 'assertions = excluded.assertions'
   const { rows } = await Db.query(
     `INSERT INTO eval_cases (dataset_id, case_key, level, query, negative, note, gold, assertions)
        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
      ON CONFLICT (dataset_id, case_key)
      DO UPDATE SET level = excluded.level, query = excluded.query, negative = excluded.negative,
-                   note = excluded.note, gold = excluded.gold, assertions = excluded.assertions, updated_at = now()
+                   note = excluded.note, gold = excluded.gold, ${AssertionClause}, updated_at = now()
      RETURNING *`,
     [DatasetId, Data.case_key, Data.level, Data.query, Data.negative, Data.note, JSON.stringify(Data.gold), JSON.stringify(Data.assertions ?? emptyAssertions())],
   )

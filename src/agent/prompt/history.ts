@@ -26,11 +26,12 @@ class SessionHistory {
     this.repo = Repo
   }
 
-  async loadSessionContext(Query: string, SessionId: string, MessageCount: number): Promise<SessionContext> {
+  async loadSessionContext(Query: string, SessionId: string, MessageCount: number, TraceId?: string): Promise<SessionContext> {
     const Stored = await this.repo.getMessagesBySession(SessionId)
     const History = Stored.slice(-MessageCount).map(toHistoryMessage).filter((Entry): Entry is UIMessage => Entry !== null)
     const UserStored = await this.repo.createMessage({
       session_id: SessionId,
+      trace_id: TraceId ?? null,
       role: 'user',
       content: Query,
       parts: [{ type: 'text', text: Query }],

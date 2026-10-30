@@ -3,11 +3,12 @@
  * 两层判定只有一条链：叶子全通过 → 服务 ok；服务全 ok → 顶层 ok / 200，否则 degraded / 503。
  * 并发跑全部叶子、逐个 try/catch：单项抛错转 ok:false 并留 detail，不炸掉整体响应。
  * 整份结果缓存 CacheTtlMs（默认 5s），期内直接复用缓存体与状态码，避免频繁真实探测；未做并发去重。
- * ollama 模型名带 tag（如 qwenembed:latest）而 EMBEDDING_MODEL 是裸名，故就绪判定须同时匹配裸名与 `${emb}:` 前缀。
+ * ollama 模型名带 tag（如 qwenembed:latest）而 EMBEDDING_MODEL 是 `${provider}:${modelId}` 复合键，故就绪判定先用 modelIdOf 取裸 modelId，再同时匹配裸名与 `${emb}:` 前缀。
  * eval 组：共享模式恒 ok 并标 mode=shared（主库同一池已由 postgres 组覆盖，不重复探）；隔离模式才真 ping 评测库。
  */
 
 import { Hono } from 'hono'
+import { modelIdOf } from '../adapter/model/key'
 import { ollamaHealthCheck, ollamaModelList, ollamaStatusList } from '../adapter/contract'
 
 export { createHealthRoute, createHealthServices }
@@ -50,7 +51,7 @@ interface CachedResponse {
 
 function createHealthServices(Config: AppConfig, Repo: Repo, Store: ObjectStore, Eval: EvalProbe): HealthService[] {
   const base = Config.ollamaBaseUrl
-  const emb = Config.embeddingModel.includes(':') ? Config.embeddingModel.slice(Config.embeddingModel.indexOf(':') + 1) : Config.embeddingModel
+  const emb = modelIdOf(Config.embeddingModel)
 
   return [
     {

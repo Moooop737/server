@@ -46,6 +46,8 @@ interface AnswerContext {
   model: LanguageModelV4
   judgeModel: LanguageModelV4 | null
   rubric: Rubric | null
+  knobs: RunKnobs
+  temperature: number
 }
 
 @singleton()
@@ -111,12 +113,12 @@ class EvalRunner {
     if (Run === null || Run.status !== 'queued') return
 
     const Mode = inferRunMode(Run.snapshot)
-    const Knobs = Mode === 'retrieval' ? readKnobs(Run.snapshot) : null
-    if (Mode === 'retrieval' && Knobs === null) {
+    const Knobs = readKnobs(Run.snapshot)
+    if (Knobs === null) {
       await this.repo.finishRun(RunId, 'failed', { duration_ms: 0, error_reason: '运行配置快照不合法' })
       return
     }
-    const Prepared = Mode === 'answer' ? this.prepareAnswer(Run.snapshot) : null
+    const Prepared = Mode === 'answer' ? this.prepareAnswer(Run.snapshot, Knobs) : null
     if (Prepared !== null && 'error' in Prepared) {
       await this.repo.finishRun(RunId, 'failed', { duration_ms: 0, error_reason: Prepared.error })
       logError('E_EVAL_RUN', `run=${RunId} ${Prepared.error}`)
@@ -125,13 +127,13 @@ class EvalRunner {
     if (!await this.repo.startRun(RunId)) return
 
     const Started = Date.now()
-    logInfo('I_EVAL_RUN_START', `run=${RunId} mode=${Mode} cases=${Run.snapshot.cases.length}${Knobs === null ? '' : ` k=${Knobs.limit}`}`)
+    logInfo('I_EVAL_RUN_START', `run=${RunId} mode=${Mode} cases=${Run.snapshot.cases.length} k=${Knobs.limit}`)
 
     try {
       for (const Case of Run.snapshot.cases) {
         if (State.aborted) break
         const Result = Prepared === null
-          ? await this.runCase(Case, Knobs!)
+          ? await this.runCase(Case, Knobs)
           : await this.runAnswerCase(Case, Prepared)
         await this.repo.appendRunResult(RunId, Result)
       }
@@ -157,10 +159,30 @@ class EvalRunner {
   private async runCase(Case: EvalRunCaseSnapshot, Knobs: RunKnobs): Promise<EvalRunResult> {
     const Started = Date.now()
     let missing = 0
-    for (const Gold of Case.gold) {
-      const Chunk = await this.repo.getChunkByDataUri(Gold.data_uri, Gold.chunk_index)
-      const Prefix = Gold.content_prefix.trim()
-      if (Chunk === null || Prefix === '' || !Chunk.content.trim().startsWith(Prefix)) missing += 1
+    const InvalidGold: EvalRunCaseSnapshot['gold'] = []
+    try {
+      for (const Gold of Case.gold) {
+        const Chunk = await this.repo.getChunkByDataUri(Gold.data_uri, Gold.chunk_index)
+        const Prefix = Gold.content_prefix.trim()
+        if (Chunk === null || Prefix === '' || !Chunk.content.trim().startsWith(Prefix)) {
+          missing += 1
+          InvalidGold.push(Gold)
+        }
+      }
+    } catch (Err) {
+      return {
+        case_key: Case.case_key,
+        negative: Case.negative,
+        rank: null,
+        matched: 0,
+        total: Case.negative ? 0 : Case.gold.length,
+        hit_count: 0,
+        recall: 0,
+        mrr: 0,
+        missing_gold: 0,
+        duration_ms: Date.now() - Started,
+        error: Err instanceof Error ? Err.message : String(Err),
+      }
     }
 
     try {
@@ -174,6 +196,7 @@ class EvalRunner {
       const Score = scoreCase({
         negative: Case.negative,
         gold: Case.gold,
+        invalidGold: InvalidGold,
         hits: Result.hits.map((Hit) => ({ data_uri: Hit.dataUri, chunk_index: Hit.chunk.chunk_index })),
       })
       return {
@@ -202,29 +225,42 @@ class EvalRunner {
     }
   }
 
-  private prepareAnswer(Snapshot: EvalRunSnapshot): AnswerContext | { error: string } {
+  private prepareAnswer(Snapshot: EvalRunSnapshot, Knobs: RunKnobs): AnswerContext | { error: string } {
     const ModelName = Snapshot.run_config?.config?.model
     const Model = typeof ModelName === 'string' ? this.chat.resolve(ModelName) : undefined
     if (Model === undefined) return { error: `回答模型不在册: ${String(ModelName)}` }
+    const Temperature = Snapshot.run_config?.config?.temperature
+    if (typeof Temperature !== 'number' || !Number.isFinite(Temperature) || Temperature < 0 || Temperature > 2) {
+      return { error: 'temperature 快照不合法' }
+    }
 
     const JudgeName = Snapshot.metric_config?.config?.judge_model
     if (JudgeName === null || JudgeName === undefined || JudgeName === '') {
-      return { model: Model, judgeModel: null, rubric: null }
+      return { model: Model, judgeModel: null, rubric: null, knobs: Knobs, temperature: Temperature }
     }
     if (typeof JudgeName !== 'string') return { error: 'judge_model 需为字符串或 null' }
     const JudgeModel = this.chat.resolve(JudgeName)
     if (JudgeModel === undefined) return { error: `judge 模型不在册: ${JudgeName}` }
     const Rubric = Snapshot.rubric ?? resolveRubric(Snapshot.metric_config?.config?.rubric)
     if (Rubric === null) return { error: 'rubric 版本未知' }
-    return { model: Model, judgeModel: JudgeModel, rubric: Rubric }
+    return { model: Model, judgeModel: JudgeModel, rubric: Rubric, knobs: Knobs, temperature: Temperature }
   }
 
   private async runAnswerCase(Case: EvalRunCaseSnapshot, Ctx: AnswerContext): Promise<EvalRunResult> {
     const Started = Date.now()
-    const Answer = await answerCase(Ctx.model, this.retriever, Case.query)
+    const Answer = await answerCase(Ctx.model, this.retriever, Case.query, {
+      temperature: Ctx.temperature,
+      search: {
+        limit: Ctx.knobs.limit,
+        vectorTopK: Ctx.knobs.vectorTopK,
+        lexicalTopK: Ctx.knobs.lexicalTopK,
+        minSimilarity: Ctx.knobs.minSimilarity,
+        rrfK: Ctx.knobs.rrfK,
+      },
+    })
     const HasAssertions = Case.assertions.expect.length + Case.assertions.reject.length > 0
-    const Assertion = HasAssertions ? evaluateAssertions(Answer.answer, Case.assertions) : null
-    const Judge = Ctx.judgeModel === null || Ctx.rubric === null || Answer.error !== null
+    const Assertion = Answer.error !== null || !HasAssertions ? null : evaluateAssertions(Answer.answer, Case.assertions)
+    const Judge = Case.negative || Ctx.judgeModel === null || Ctx.rubric === null || Answer.error !== null
       ? null
       : await judgeCase(Ctx.judgeModel, Ctx.rubric, Case.query, Answer.answer, Answer.citations)
 

@@ -24,6 +24,7 @@ interface HitIdentity {
 interface CaseScoreInput {
   negative: boolean
   gold: GoldIdentity[]
+  invalidGold?: GoldIdentity[]
   hits: HitIdentity[]
 }
 
@@ -75,6 +76,8 @@ interface EvalAnswerSummary {
     scored: number
     passed: number
     rate: number | null
+    errored: number
+    unjudged: number
     groundedness: number | null
     correctness: number | null
     citation: number | null
@@ -91,6 +94,7 @@ function scoreCase(Input: CaseScoreInput): CaseScore {
 
   const Gold = uniqueGold(Input.gold)
   if (Gold.length === 0) return { rank: null, matched: 0, total: 0, recall: 0, mrr: 0 }
+  const Invalid = new Set((Input.invalidGold ?? []).map(keyOf))
 
   const RankByKey = new Map<string, number>()
   Input.hits.forEach((Hit, Index) => {
@@ -101,6 +105,7 @@ function scoreCase(Input: CaseScoreInput): CaseScore {
   let matched = 0
   let rank: number | null = null
   for (const Item of Gold) {
+    if (Invalid.has(keyOf(Item))) continue
     const Found = RankByKey.get(keyOf(Item))
     if (Found === undefined) continue
     matched += 1
@@ -165,6 +170,8 @@ function summarizeAnswerResults(
   let assertionPassed = 0
   let judgeScored = 0
   let judgePassed = 0
+  let judgeErrored = 0
+  let judgeUnjudged = 0
   let groundedness = 0
   let groundednessCount = 0
   let correctness = 0
@@ -192,6 +199,8 @@ function summarizeAnswerResults(
 
     const Judge = Result.judge ?? null
     const JudgeUsable = Judge !== null && Judge.error === null && Judge.verdict !== null
+    if (Judge === null) judgeUnjudged += 1
+    else if (Judge.error !== null) judgeErrored += 1
     if (Judge !== null && JudgeUsable) {
       judgeScored += 1
       if (Judge.verdict === 'pass') judgePassed += 1
@@ -241,6 +250,8 @@ function summarizeAnswerResults(
       scored: judgeScored,
       passed: judgePassed,
       rate: judgeScored === 0 ? null : judgePassed / judgeScored,
+      errored: judgeErrored,
+      unjudged: judgeUnjudged,
       groundedness: groundednessCount === 0 ? null : groundedness / groundednessCount,
       correctness: correctnessCount === 0 ? null : correctness / correctnessCount,
       citation: citationCount === 0 ? null : citation / citationCount,

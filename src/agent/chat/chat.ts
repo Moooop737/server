@@ -9,6 +9,7 @@ import { currentTraceId, logError, runWithTrace } from '../../trace/systemtrace/
 import type { LanguageModelV4 } from '@ai-sdk/provider';
 import type { Repo } from '../../adapter/contract'
 import { INSTRUCTIONS } from '../prompt/instruction';
+import { AGENT_STEP_LIMIT } from '../step-limit'
 import { SessionHistory } from '../prompt/history';
 import { assistantContent, classifyChatError, resolveTurnFailure, resolveTurnStatus, type ChatFailure } from './outcome';
 
@@ -50,7 +51,7 @@ class ChatService {
     }
 
     try {
-      const { uiMessages, modelMessages } = await this.history.loadSessionContext(Query, SessionId, HISTORY_MESSAGES)
+      const { uiMessages, modelMessages } = await this.history.loadSessionContext(Query, SessionId, HISTORY_MESSAGES, TraceId)
       let Failure: ChatFailure | null = null
 
       const Result = streamText({
@@ -58,7 +59,7 @@ class ChatService {
         messages: modelMessages,
         instructions: INSTRUCTIONS,
         tools: this.tools,
-        stopWhen: stepCountIs(5),
+        stopWhen: stepCountIs(AGENT_STEP_LIMIT),
         abortSignal: Signal,
         telemetry: { functionId: CHAT_FUNCTION_ID },
         onError: ({ error }) => {
@@ -104,6 +105,7 @@ class ChatService {
           try {
             await this.repo.createMessage({
               session_id: SessionId,
+              trace_id: TraceId ?? null,
               role: 'assistant',
               content: Content,
               parts: Parts,

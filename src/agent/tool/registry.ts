@@ -8,8 +8,9 @@ export { buildAgentTools }
 
 import { buildRetrieveTool } from './tools/retrieve'
 
+import type { AgentToolOptions } from './contracts'
 import type { Retriever } from '../../retrieve/contracts'
 
-function buildAgentTools(Retriever: Retriever) {
-  return { retrieve: buildRetrieveTool(Retriever) }
+function buildAgentTools(Retriever: Retriever, Options: AgentToolOptions = {}) {
+  return { retrieve: buildRetrieveTool(Retriever, Options) }
 }

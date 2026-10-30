@@ -72,6 +72,31 @@ describe('AppConfig 失败路径', () => {
     expect(Res.Text).toContain('S3_FORCE_PATH_STYLE')
   })
 
+  it('EVAL_DATABASE_URL 与主库相同 → E_CONFIG_INVALID', () => {
+    const Res = runConfig({
+      S3_ENDPOINT: 'http://127.0.0.1:9000',
+      S3_BUCKET: 'kbfile',
+      S3_ACCESS_KEY_ID: 'x',
+      S3_SECRET_ACCESS_KEY: 'x',
+      EVAL_DATABASE_URL: BaseRequired.DATABASE_URL,
+    })
+    expect(Res.Status).toBe(1)
+    expect(Res.Text).toContain('E_CONFIG_INVALID')
+    expect(Res.Text).toContain('EVAL_DATABASE_URL')
+  })
+
+  it('EVAL_DATABASE_URL 非法 → E_CONFIG_INVALID', () => {
+    const Res = runConfig({
+      S3_ENDPOINT: 'http://127.0.0.1:9000',
+      S3_BUCKET: 'kbfile',
+      S3_ACCESS_KEY_ID: 'x',
+      S3_SECRET_ACCESS_KEY: 'x',
+      EVAL_DATABASE_URL: 'not a url',
+    })
+    expect(Res.Status).toBe(1)
+    expect(Res.Text).toContain('E_CONFIG_INVALID')
+  })
+
   it('没有 EVAL_DATABASE_URL → CONFIG_OK（共享模式，不阻断启动）', () => {
     const Res = runConfig({
       S3_ENDPOINT: 'http://127.0.0.1:9000',

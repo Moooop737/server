@@ -2,9 +2,9 @@
  * 检索工具 —— 由模型自己决定要不要检索、用什么词检索、要几条（topK）。
  * 依赖走闭包、不走 toolsContext：buildRetrieveTool(Retriever) 由 registry 在 ChatService 构造期调一次，
  *   那只 Retriever 是 RetrieverFactory 持有的默认装配（与请求无关；维度判定在 search 里每请求现查，不会被构造期凝固）。
+ * 评测可传 Options.search 覆盖两路候选/阈值/RRF；limit 是上限：模型要的 topK 超过它时被截到上限。
  * execute 的错误规矩：RetrieverError 一律 catch 后 return 结构化 error（理由见 contracts.ts 文件头）；
  *   非 RetrieverError 记一行结构化日志后照旧抛，别把真 bug 洗成看起来像拒答。
- * topK 只截融合后的条数（fusion/rrf.ts 的 slice），两路候选条数固定读 config 的 retrievalVectorTopK / retrievalLexicalTopK。
  */
 
 export { buildRetrieveTool }
@@ -15,10 +15,10 @@ import { RetrieverError } from '../../../retrieve/retrievers'
 import { getLlmtraceBridge } from '../../../trace/llmtrace/bridge'
 import { logError } from '../../../trace/systemtrace/log'
 
-import type { RetrieveToolInput, RetrieveToolOutput, RetrievedHit } from '../contracts'
-import type { Retriever, RetrievalResult, RetrievedChunk } from '../../../retrieve/contracts'
+import type { AgentToolOptions, RetrieveToolInput, RetrieveToolOutput, RetrievedHit } from '../contracts'
+import type { Retriever, RetrievalResult, RetrievedChunk, SearchOptions } from '../../../retrieve/contracts'
 
-function buildRetrieveTool(Retriever: Retriever): Tool<RetrieveToolInput, RetrieveToolOutput> {
+function buildRetrieveTool(Retriever: Retriever, Options: AgentToolOptions = {}): Tool<RetrieveToolInput, RetrieveToolOutput> {
   return tool({
     description: "Search the user's knowledge base with hybrid retrieval (vector + BM25). Call it before answering anything about the user's documents.",
     inputSchema: z.object({
@@ -27,8 +27,10 @@ function buildRetrieveTool(Retriever: Retriever): Tool<RetrieveToolInput, Retrie
     }),
     execute: async (Input: RetrieveToolInput) => {
       try {
-        const Sink = getLlmtraceBridge()?.createStageSink() ?? undefined
-        return toOutput(await Retriever.search(Input.prompt, { limit: Input.topK, ...(Sink === undefined ? {} : { sink: Sink }) }))
+        const Sink = Options.trace === false ? undefined : getLlmtraceBridge()?.createStageSink() ?? undefined
+        const Limit = Options.search?.limit === undefined ? Input.topK : Math.min(Input.topK, Options.search.limit)
+        const Search: SearchOptions = { ...Options.search, limit: Limit, ...(Sink === undefined ? {} : { sink: Sink }) }
+        return toOutput(await Retriever.search(Input.prompt, Search))
       } catch (err) {
         if (err instanceof RetrieverError) {
           return { hits: [], vectorCount: 0, lexicalCount: 0, error: { code: err.code, message: err.message } }

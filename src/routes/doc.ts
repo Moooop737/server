@@ -549,6 +549,7 @@ const CustomPaths = {
                 properties: {
                   id: { type: 'string', format: 'uuid' },
                   title: { type: 'string' },
+                  group_name: { type: 'string', nullable: true },
                   updated_at: { type: 'string', format: 'date-time' },
                   chat_count: { type: 'integer' },
                   last_chat_at: { type: 'string', format: 'date-time' },
@@ -564,27 +565,47 @@ const CustomPaths = {
       },
     },
   },
-  '/observability/chats': {
+  '/observability/sessions/{id}/transcript': {
     get: {
       tags: ['Observability'],
-      operationId: 'listChatTraces',
-      summary: '最近的 /chat 记录（本地库，可按会话过滤）',
+      operationId: 'readSessionTranscript',
+      summary: '会话按轮摊平：每条 /chat trace + 归到它名下的消息（本地库）',
       parameters: [
-        { name: 'session_id', in: 'query', schema: { type: 'string', format: 'uuid' } },
-        { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1 } },
-        { name: 'per_page', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } },
+        { name: 'id', in: 'path', required: true, description: '会话 UUID', schema: { type: 'string', format: 'uuid' } },
       ],
       responses: {
-        200: Ok('对话行与分页；不含 Langfuse 观测内容', {
+        200: Ok('轮与消息；观测内容仍按 trace id 懒加载', {
           type: 'object',
-          required: ['chats', 'pagination'],
+          required: ['turns'],
           properties: {
-            chats: { type: 'array', items: ChatTraceSchema },
-            pagination: PageSchema,
+            turns: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['trace', 'messages'],
+                properties: {
+                  trace: ChatTraceSchema,
+                  messages: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      required: ['id', 'role', 'content', 'created_at'],
+                      properties: {
+                        id: { type: 'string', format: 'uuid' },
+                        role: { type: 'string', enum: ['user', 'assistant'] },
+                        content: { type: 'string' },
+                        created_at: { type: 'string', format: 'date-time' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
         }),
-        400: Err('session_id 或分页参数不合法'),
-        500: Err('读取对话列表失败'),
+        400: Err('id 不是 UUID'),
+        404: Err('会话不存在或已删除'),
+        500: Err('读取会话消息失败'),
       },
     },
   },

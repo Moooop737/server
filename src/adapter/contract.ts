@@ -35,13 +35,13 @@
 
 export { RetrieverHandle, PostgresRepo, EvalPostgresRepo, PostgresCodebaseRepo, EmbeddingHandle, ChatHandle, ObjectStoreHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, embedChunks }
 export { resources, sessions, messages, traces } from './repo/orm/schema'
-export { listChatSessions, listChatTraces, getChatTrace } from './repo/observability'
+export { listChatSessions, getChatTrace, getSessionTranscript } from './repo/observability'
 export { ObjectStoreError } from './storage/object-store'
 export type { Repo, CodebaseRepo, ChunkCandidate, Resource, ResourceStatus, ResourceCounts, Message, Trace, TraceStage, TraceStageInput, TracePayloads, TracePayloadOmitReason, RegistedProviders, RegistedModels }
 export type { EvalDataset, EvalCase, EvalGold, EvalAssertion, EvalAssertions, EvalConfig, EvalConfigKind, EvalCaseInput } from './repo/eval'
 export type { EvalRun, EvalRunStatus, EvalRunSnapshot, EvalRunCaseSnapshot, EvalRunResult, EvalHumanResult, EvalVerdict, EvalAssertionCheck, EvalAssertionResult, EvalJudgeResult, EvalCitation } from './repo/eval-run'
 export type { Codebase, CodebaseEntry, CodebaseStatus } from './repo/codebase'
-export type { ChatSessionSummary, ChatTraceSummary } from './repo/observability'
+export type { ChatSessionSummary, ChatTraceSummary, ChatTurn, TranscriptMessage } from './repo/observability'
 export type { ObjectStore, ObjectStat, ObjectBody, ObjectGetOptions, ObjectPresignOptions, ObjectPresignPutOptions } from './storage/object-store'
 
 import 'reflect-metadata'
@@ -63,7 +63,7 @@ import { writeChunksWithEmbeddings, deleteChunksByResource, getChunksPage, getCh
 import { dimensionsInStore, vectorCandidates } from './repo/search-vector'
 import { lexicalCandidates } from './repo/search-lexical'
 import { insertTrace, finishTrace, setTraceSession, setTraceResource, getTrace, insertTraceStage, listTraceStages } from './repo/trace'
-import { listChatSessions, listChatTraces, getChatTrace } from './repo/observability'
+import { listChatSessions, getChatTrace, getSessionTranscript } from './repo/observability'
 import { getSession } from './repo/session'
 import { createMessage, getMessagesBySession } from './repo/message'
 import {
@@ -78,6 +78,7 @@ import {
 import { ollamaHealthCheck, ollamaModelList, ollamaStatusList } from './connection/ollama'
 import { type ProviderEntryName } from './provider/registry'
 import { ModelRegistry, type EmbeddingModelId, type LanguageModelId } from './model/registry'
+import { modelIdOf } from './model/key'
 import { embedChunks } from './model/embed-chunks'
 import { createS3Client, putObject, statObject, getObject, deleteObject, presignGet, presignPut, pingBucket, ensureBucket } from './storage/s3'
 import type { ObjectStore, ObjectGetOptions, ObjectPresignOptions, ObjectPresignPutOptions } from './storage/object-store'
@@ -89,7 +90,7 @@ import type { Codebase, CodebaseEntry, CodebaseStatus } from './repo/codebase'
 import type { Chunk, Embedding } from './repo/chunk'
 import type { Session } from './repo/session'
 import type { Message } from './repo/message'
-import type { ChatSessionSummary, ChatTraceSummary } from './repo/observability'
+import type { ChatSessionSummary, ChatTraceSummary, ChatTurn } from './repo/observability'
 import type { Orm } from './repo/orm/client'
 import type { EvalDataset, EvalCase, EvalConfig, EvalConfigKind, EvalCaseInput } from './repo/eval'
 import type { EvalRun, EvalRunSnapshot, EvalRunResult, EvalHumanResult } from './repo/eval-run'
@@ -135,7 +136,7 @@ interface Repo {
   deleteChunksByResource(ResourceId: string): Promise<void>
 
   getSession(Id: string): Promise<Session | null>
-  createMessage(Data: Pick<Message, 'session_id' | 'role' | 'content' | 'parts'>): Promise<Message>
+  createMessage(Data: Pick<Message, 'session_id' | 'role' | 'content' | 'parts'> & Partial<Pick<Message, 'trace_id'>>): Promise<Message>
   getMessagesBySession(SessionId: string): Promise<Message[]>
 
   insertTrace(Entry: TraceStart): Promise<void>
@@ -147,8 +148,8 @@ interface Repo {
   listTraceStages(TraceId: string): Promise<TraceStage[]>
 
   listChatSessions(Offset: number, Limit: number): Promise<{ Items: ChatSessionSummary[]; TotalCount: number }>
-  listChatTraces(SessionId: string | null, Offset: number, Limit: number): Promise<{ Items: ChatTraceSummary[]; TotalCount: number }>
   getChatTrace(TraceId: string): Promise<ChatTraceSummary | null>
+  getSessionTranscript(SessionId: string): Promise<ChatTurn[]>
 
   listDatasets(): Promise<EvalDataset[]>
   getDataset(Id: string): Promise<EvalDataset | null>
@@ -174,7 +175,7 @@ interface Repo {
 
   createRun(Data: { dataset_id: string; run_config_id: string; metric_config_id: string; snapshot: EvalRunSnapshot }): Promise<EvalRun>
   getRun(Id: string): Promise<EvalRun | null>
-  listRuns(DatasetId: string | null): Promise<EvalRun[]>
+  listRuns(DatasetId: string | null, RunConfigId?: string | null): Promise<EvalRun[]>
   appendRunResult(Id: string, Result: EvalRunResult): Promise<boolean>
   setHumanResult(RunId: string, Entry: EvalHumanResult): Promise<EvalHumanResult[] | null>
   startRun(Id: string): Promise<boolean>
@@ -223,8 +224,7 @@ class EmbeddingHandle {
       process.exit(1)
     }
     this.model = Models.embeddingModels[Name as EmbeddingModelId]!
-    const Separator = Name.indexOf(':')
-    this.modelId = Separator === -1 ? Name : Name.slice(Separator + 1)
+    this.modelId = modelIdOf(Name)
     this.dimensions = Config.embeddingDimensions
   }
 }
@@ -378,7 +378,7 @@ class PostgresRepo implements Repo {
     return getSession(this.db, Id)
   }
 
-  createMessage(Data: Pick<Message, 'session_id' | 'role' | 'content' | 'parts'>) {
+  createMessage(Data: Pick<Message, 'session_id' | 'role' | 'content' | 'parts'> & Partial<Pick<Message, 'trace_id'>>) {
     return createMessage(this.db, Data)
   }
 
@@ -418,12 +418,12 @@ class PostgresRepo implements Repo {
     return listChatSessions(this.db, Offset, Limit)
   }
 
-  listChatTraces(SessionId: string | null, Offset: number, Limit: number) {
-    return listChatTraces(this.db, SessionId, Offset, Limit)
-  }
-
   getChatTrace(TraceId: string) {
     return getChatTrace(this.db, TraceId)
+  }
+
+  getSessionTranscript(SessionId: string) {
+    return getSessionTranscript(this.db, SessionId)
   }
 
   listDatasets() {
@@ -518,8 +518,8 @@ class PostgresRepo implements Repo {
     return getRun(this.db, Id)
   }
 
-  listRuns(DatasetId: string | null) {
-    return listRuns(this.db, DatasetId)
+  listRuns(DatasetId: string | null, RunConfigId: string | null = null) {
+    return listRuns(this.db, DatasetId, RunConfigId)
   }
 
   appendRunResult(Id: string, Result: EvalRunResult) {

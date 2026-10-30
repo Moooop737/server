@@ -16,6 +16,7 @@ const SERVER_ROOT = resolve(SCRIPT_DIR, '..')
 async function main(): Promise<void> {
   const EvalUrl = required('EVAL_DATABASE_URL')
   const DbName = databaseName(EvalUrl)
+  if (DbName === 'postgres') throw new Error('评测库不能指向维护库 postgres')
   const MaintenanceUrl = new URL(EvalUrl)
   MaintenanceUrl.pathname = '/postgres'
 

@@ -1,11 +1,11 @@
 /**
- * 对话观测路由 —— /chats 页面用：先只读本地库拿会话与 trace_id，打开某条对话时才去 Langfuse 读观测。
- *   GET /sessions            库里的会话 + 每个会话有几次 /chat（懒加载第一层）
- *   GET /chats?session_id=   最近的 /chat 行（带本地 trace_id / langfuse_trace_id），可按会话过滤
- *   GET /traces/:id          按本地 trace_id 读库拿 langfuse_trace_id，再读 Langfuse /api/public/v2/observations
- * 失败映射：分页/ID 非 UUID→400；trace 不存在→404；流未收口或没拿到 Langfuse trace id→409 E_LANGFUSE_PENDING；
+ * 对话观测路由 —— /chats 页面用：先只读本地库拿会话与消息，点开某一轮时才去 Langfuse 读观测。
+ *   GET /sessions                    库里的会话 + 每个会话有几次 /chat（懒加载第一层）
+ *   GET /sessions/:id/transcript     该会话按轮摊平：每条 POST /chat trace + 归到它名下的消息
+ *   GET /traces/:id                  按本地 trace_id 读库拿 langfuse_trace_id，再读 Langfuse /api/public/v2/observations
+ * 失败映射：分页/ID 非 UUID→400；会话不存在或已软删→404；流未收口或没拿到 Langfuse trace id→409 E_LANGFUSE_PENDING；
  *   Langfuse 未配置→503；鉴权/限流/不可达/形状不符由 LangfuseReadError 自带状态码。
- * 不打印 Key；Langfuse 的读取失败不影响本地会话与对话列表。
+ * 不打印 Key；Langfuse 的读取失败不影响本地会话与消息。
  */
 
 import 'reflect-metadata'
@@ -52,26 +52,17 @@ class ObservabilityRoute {
       }
     })
 
-    app.get('/chats', async (c) => {
-      const Paging = pagingOf(c.req.query('page'), c.req.query('per_page'))
-      if (Paging === null) return badQuery(c)
-      const RawSessionId = c.req.query('session_id')
-      if (RawSessionId !== undefined && !uuidOk(RawSessionId)) {
-        return c.json({ code: 'E_BAD_ID', message: 'session_id 需为 UUID' }, 400)
-      }
+    app.get('/sessions/:id/transcript', async (c) => {
+      const id = c.req.param('id').toLowerCase()
+      if (!uuidOk(id)) return c.json({ code: 'E_BAD_ID', message: 'id 需为 UUID' }, 400)
       try {
-        const Result = await repo.listChatTraces(
-          RawSessionId ?? null,
-          (Paging.Page - 1) * Paging.PerPage,
-          Paging.PerPage,
-        )
-        return c.json({
-          chats: Result.Items,
-          pagination: paginationOf(Paging.Page, Paging.PerPage, Result.TotalCount),
-        })
+        if ((await repo.getSession(id)) === null) {
+          return c.json({ code: 'E_SESSION_NOT_FOUND', message: '会话不存在或已删除' }, 404)
+        }
+        return c.json({ turns: await repo.getSessionTranscript(id) })
       } catch (err) {
         logError('E_OBSERVABILITY_READ', String(err))
-        return c.json({ code: 'E_OBSERVABILITY_READ', message: '读取对话列表失败' }, 500)
+        return c.json({ code: 'E_OBSERVABILITY_READ', message: '读取会话消息失败' }, 500)
       }
     })
 

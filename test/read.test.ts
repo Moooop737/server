@@ -1,6 +1,6 @@
 /**
- * Langfuse 读侧的边界：URL 带 traceId/fields、Basic 鉴权、cursor 翻页、input/output 解析、
- * 401/429 与坏形状映射成稳定的 LangfuseReadError；空 data 是导出延迟，不报错。
+ * Langfuse 读侧 —— 第一条走真凭证 + 真网络（不存在的 traceId 应返回空列表）；
+ * 其余边界用构造响应：URL/鉴权/翻页/401/429/坏形状在真 Langfuse 上造不出来，属于边界输入，不是模拟后端。
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -44,6 +44,14 @@ afterEach(() => {
 })
 
 describe('Langfuse 观测读侧', () => {
+  it('真 Langfuse：不存在的 traceId 返回空列表（真凭证 + 真网络）', async () => {
+    vi.unstubAllEnvs()
+    const TraceId = `kc-nonexistent-${Date.now()}`
+    const Result = await readLangfuseObservations(TraceId)
+    console.log(`{[真 Langfuse]}\ntraceId=${TraceId} observations=${Result.Observations.length} truncated=${Result.Truncated}`)
+    expect(Result).toEqual({ Observations: [], Truncated: false })
+  }, 30000)
+
   it('带 traceId 与字段组请求；input/output 解析成 JSON，费用与 token 原样穿过', async () => {
     const Fetch = vi.fn().mockResolvedValue(jsonResponse({ data: [Observation], meta: {} }))
     vi.stubGlobal('fetch', Fetch)

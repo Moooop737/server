@@ -61,7 +61,7 @@ class AppConfig {
 
     this.port = numOrThrow(getEnv('PORT'), 'PORT', 3000, 1, 65535)
     this.databaseUrl = databaseUrl!
-    this.evalDatabaseUrl = getEnv('EVAL_DATABASE_URL') ?? null
+    this.evalDatabaseUrl = parseEvalDatabaseUrl(getEnv('EVAL_DATABASE_URL'), this.databaseUrl)
     this.ollamaBaseUrl = ollamaBaseUrl!
 
     this.retrievalVectorTopK = numOrThrow(getEnv('RETRIEVAL_VECTOR_TOPK'), 'RETRIEVAL_VECTOR_TOPK', 10, 1, 100)
@@ -154,6 +154,17 @@ function boolOrThrow(Raw: string | undefined, Name: string, Def: boolean): boole
   if (Raw === 'true') return true
   if (Raw === 'false') return false
   return fail('E_CONFIG_INVALID', `${Name} 只能是 true/false，收到: ${Raw}`)
+}
+
+function parseEvalDatabaseUrl(Raw: string | undefined, MainUrl: string): string | null {
+  if (Raw === undefined) return null
+  if (Raw === MainUrl) fail('E_CONFIG_INVALID', 'EVAL_DATABASE_URL 不能与 DATABASE_URL 相同')
+  try {
+    new URL(Raw)
+  } catch {
+    fail('E_CONFIG_INVALID', 'EVAL_DATABASE_URL 不是合法 URL')
+  }
+  return Raw
 }
 
 function fail(code: string, message: string): never {

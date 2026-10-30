@@ -33,7 +33,7 @@ const SUCCESS_REQUEST: Record<string, 'full' | 'resource-meta'> = {
   'POST /resources': 'resource-meta',
 }
 const NO_PAYLOADS = new Set(['POST /chat', 'POST /retrieve'])
-const SKIP_PREFIXES = ['/health', '/traces','/trace', '/observability', '/doc','/resources']
+const SKIP_PREFIXES = ['/health', '/traces','/trace', '/observability', '/doc','/resources', '/models']
 
 type RequestBodyMode = 'full' | 'resource-meta'
 

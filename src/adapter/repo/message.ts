@@ -18,6 +18,8 @@ interface timestamp {
 interface Message extends timestamp {
   id: string
   session_id: string
+  /** 这一轮 /chat 的本地 trace；老会话或直连写入时可为 null */
+  trace_id: string | null
   role: 'user' | 'assistant'
   content: string
   parts: UIMessage['parts']
@@ -32,6 +34,7 @@ function rowToMessage(r: any): Message {
   return {
     id: r.id,
     session_id: r.session_id,
+    trace_id: r.trace_id ?? null,
     role: r.role,
     content: r.content,
     parts: typeof r.parts === 'string' ? JSON.parse(r.parts) : (r.parts ?? []),
@@ -44,20 +47,20 @@ function rowToMessage(r: any): Message {
 
 async function createMessage(
   Db: Pool,
-  Data: Pick<Message, 'session_id' | 'role' | 'content' | 'parts'>,
+  Data: Pick<Message, 'session_id' | 'role' | 'content' | 'parts'> & Partial<Pick<Message, 'trace_id'>>,
 ): Promise<Message> {
   const { rows } = await Db.query(
-    `INSERT INTO messages (session_id, role, content, parts)
-     VALUES ($1, $2, $3, $4::jsonb)
-     RETURNING id, session_id, role, content, parts, sequence, created_at, updated_at, deleted_at`,
-    [Data.session_id, Data.role, Data.content, JSON.stringify(Data.parts)],
+    `INSERT INTO messages (session_id, trace_id, role, content, parts)
+     VALUES ($1, $2, $3, $4, $5::jsonb)
+     RETURNING id, session_id, trace_id, role, content, parts, sequence, created_at, updated_at, deleted_at`,
+    [Data.session_id, Data.trace_id ?? null, Data.role, Data.content, JSON.stringify(Data.parts)],
   )
   return rowToMessage(rows[0])
 }
 
 async function getMessagesBySession(Db: Pool, SessionId: string): Promise<Message[]> {
   const { rows } = await Db.query(
-    `SELECT id, session_id, role, content, parts, sequence, created_at, updated_at, deleted_at
+    `SELECT id, session_id, trace_id, role, content, parts, sequence, created_at, updated_at, deleted_at
      FROM messages
      WHERE session_id = $1 AND deleted_at IS NULL
      ORDER BY sequence ASC`,

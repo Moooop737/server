@@ -1,25 +1,21 @@
 /**
- * 代码库上传 —— 建 uploading 行并签 presignPut；complete 时 stat、下载 ZIP 到受控临时文件、
- * 只读中央目录做安全校验，再写 manifest 转 ready。不解压条目、不写条目文件、不执行仓库内容。
+ * 代码库上传 —— 建 uploading 行并签 presignPut；complete 时 stat、用 S3 range reader 只读中央目录做安全校验，
+ * 再写 manifest 转 ready。不解压条目、不写临时文件、不执行仓库内容。
  * 失败删错对象并把原因留在行上；行保留可看，硬删走 DELETE /codebases/:id。
  */
 
 export { CodebaseArchive, CodebaseError, MAX_CODEBASE_BYTES }
 
 import 'reflect-metadata'
-import { createWriteStream } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { Transform } from 'node:stream'
-import { pipeline } from 'node:stream/promises'
 import { inject, singleton } from 'tsyringe'
 import { AppConfig } from '../config'
 import { ObjectStoreHandle, PostgresCodebaseRepo } from '../adapter/contract'
-import type { Codebase, CodebaseRepo } from '../adapter/contract'
+import type { Codebase, CodebaseSummary, CodebaseRepo } from '../adapter/contract'
 import { allocateKey, buildDataUri, keyForCodebase, parseDataUri, StorageUriError } from '../adapter/storage/uri'
+import { ObjectStoreError } from '../adapter/storage/object-store'
 import { logError } from '../trace/systemtrace/log'
-import { inspectZip, ZipError } from './zip'
+import { S3ZipReader } from './s3-reader'
+import { inspectZipReader, ZipError } from './zip'
 import type { ZipInspection } from './zip'
 
 interface CodebaseUpload {
@@ -35,9 +31,9 @@ interface CodebaseUploadResult {
 
 class CodebaseError extends Error {
   readonly code: string
-  readonly codebase: Codebase | null
+  readonly codebase: CodebaseSummary | null
 
-  constructor(Code: string, Message: string, Codebase: Codebase | null = null) {
+  constructor(Code: string, Message: string, Codebase: CodebaseSummary | null = null) {
     super(Message)
     this.name = 'CodebaseError'
     this.code = Code
@@ -100,8 +96,8 @@ class CodebaseArchive {
     }
   }
 
-  async complete(Id: string): Promise<Codebase> {
-    const codebase = await this.repo.getCodebase(Id)
+  async complete(Id: string): Promise<CodebaseSummary> {
+    const codebase = await this.repo.getCodebaseSummary(Id)
     if (!codebase) throw new CodebaseError('E_NOT_FOUND', '代码库不存在')
     if (codebase.status !== 'uploading') {
       throw new CodebaseError('E_NOT_UPLOADING', `代码库状态是 ${codebase.status}，不能完成上传`, codebase)
@@ -132,38 +128,25 @@ class CodebaseArchive {
     }
     const processing = { ...codebase, status: 'processing' as const }
 
-    const dir = await mkdtemp(join(tmpdir(), 'kc-codebase-'))
-    const file = join(dir, 'upload.zip')
+    let inspection: ZipInspection
     try {
-      let bytes: number
-      try {
-        bytes = await this.download(parts.key, file)
-      } catch (err) {
+      inspection = await inspectZipReader(new S3ZipReader(this.store, parts.key, stat.size), stat.size)
+    } catch (err) {
+      if (err instanceof ObjectStoreError) {
         return await this.fail(processing, 'E_DOWNLOAD_FAILED', `读取原始 ZIP 失败: ${errMessage(err)}`, true, err, parts.key)
       }
-      if (bytes > MAX_CODEBASE_BYTES) {
-        return await this.fail(processing, 'E_UPLOAD_TOO_LARGE', `原始 ZIP 超过 ${MAX_CODEBASE_BYTES} 字节`, true, undefined, parts.key)
-      }
-
-      let inspection: ZipInspection
-      try {
-        inspection = await inspectZip(file)
-      } catch (err) {
-        const code = err instanceof ZipError ? err.code : 'E_ZIP_INVALID'
-        return await this.fail(processing, code, errMessage(err), true, err, parts.key)
-      }
-
-      const ready = await this.repo.markCodebaseReady(codebase.id, {
-        storage_size_bytes: bytes,
-        manifest: inspection.manifest,
-        file_count: inspection.fileCount,
-        declared_uncompressed_bytes: inspection.declaredUncompressedBytes,
-      })
-      if (!ready) throw new CodebaseError('E_NOT_FOUND', '代码库在完成校验期间被删除', codebase)
-      return ready
-    } finally {
-      await rm(dir, { recursive: true, force: true })
+      const code = err instanceof ZipError ? err.code : 'E_ZIP_INVALID'
+      return await this.fail(processing, code, errMessage(err), true, err, parts.key)
     }
+
+    const ready = await this.repo.markCodebaseReady(codebase.id, {
+      storage_size_bytes: stat.size,
+      manifest: inspection.manifest,
+      file_count: inspection.fileCount,
+      declared_uncompressed_bytes: inspection.declaredUncompressedBytes,
+    })
+    if (!ready) throw new CodebaseError('E_NOT_FOUND', '代码库在完成校验期间被删除', codebase)
+    return ready
   }
 
   private async allocate(BaseKey: string): Promise<{ key: string; dataUri: string }> {
@@ -175,27 +158,8 @@ class CodebaseArchive {
     return { key, dataUri: buildDataUri(this.config.s3Bucket, key) }
   }
 
-  private async download(Key: string, Path: string): Promise<number> {
-    const object = await this.store.get(Key)
-    if (!object) throw new Error('原始 ZIP 不存在')
-
-    let bytes = 0
-    const Counter = new Transform({
-      transform(Chunk, _Encoding, Callback) {
-        bytes += Chunk.length
-        if (bytes > MAX_CODEBASE_BYTES) {
-          Callback(new Error(`ZIP 超过 ${MAX_CODEBASE_BYTES} 字节`))
-          return
-        }
-        Callback(null, Chunk)
-      },
-    })
-    await pipeline(object.body, Counter, createWriteStream(Path))
-    return bytes
-  }
-
   private async fail(
-    Codebase: Codebase,
+    Codebase: CodebaseSummary,
     Code: string,
     Reason: string,
     DeleteObject: boolean,

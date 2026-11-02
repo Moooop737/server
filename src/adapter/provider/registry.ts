@@ -42,7 +42,8 @@ const ProviderList = [
         create: (ApiKey) => createOpenAICompatible({
             name: 'silicon-flow',
             apiKey: ApiKey,
-            baseURL: 'https://api.siliconflow.cn/v1'
+            baseURL: 'https://api.siliconflow.cn/v1',
+            supportsStructuredOutputs:true
         })
     },
     {
@@ -52,7 +53,8 @@ const ProviderList = [
         create: (ApiKey) => createOpenAICompatible({
             name: 'router1',
             apiKey: ApiKey,
-            baseURL: getEnv('ROUTER1_END_POINT')!
+            baseURL: getEnv('ROUTER1_END_POINT')!,
+            supportsStructuredOutputs:true
         })
     }
 

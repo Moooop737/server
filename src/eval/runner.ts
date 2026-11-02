@@ -1,7 +1,7 @@
 /**
  * 评测执行器 —— 进程内单队列：一次只跑一个 run；queued 可取消，running 在 case 之间可中止（检索/回答本身没有 signal）。
  * 一个 run 的执行：startRun → 逐 case（检索 run：校验 gold 前缀 → 检索 → 判分；答案 run：回答 → 断言 → judge → 合成）→ 追加 results → done / cancelled / failed。
- * 模式用快照推断（inferRunMode），不加列；answer run 复用同一只 retriever 与 /chat 的 INSTRUCTIONS，但不写会话表。
+ * 模式用快照推断（inferRunMode），不加列；answer run 复用同一只 retriever 与 Chat 核心的 instructions/tools，但不写会话表。
  * 参数只认 run 快照（run_config.config / metric_config.config / rubric），不读 AppConfig；judge 单条失败只记该 case。
  * 队列与运行状态不持久化：重启后由启动清扫把 queued/running 标 cancelled（repo.markInterruptedRuns）。
  */
@@ -11,9 +11,9 @@ export { EvalRunner }
 import 'reflect-metadata'
 import { inject, singleton } from 'tsyringe'
 import { EvalAssembly } from './assembly'
+import { EvalWorker } from '../agent/worker/eval'
 import { scoreCase, finalVerdict } from './metrics'
 import { inferRunMode } from './mode'
-import { answerCase } from './answer'
 import { evaluateAssertions } from './assertions'
 import { judgeCase, resolveRubric } from './judge'
 import { logError, logInfo } from '../trace/systemtrace/log'
@@ -55,14 +55,16 @@ class EvalRunner {
   private readonly repo: Repo
   private readonly retriever: Retriever
   private readonly chat: ChatHandle
+  private readonly worker: EvalWorker
   private readonly queue: QueueItem[] = []
   private active: ActiveRun | null = null
   private pumping = false
 
   constructor(@inject(EvalAssembly) Assembly: EvalAssembly, @inject(ChatHandle) Chat: ChatHandle) {
     this.repo = Assembly.repo
-    this.retriever = Assembly.handle.retriever
+    this.retriever = Assembly.retriever
     this.chat = Chat
+    this.worker = new EvalWorker(this.retriever, this.repo)
   }
 
   enqueue(RunId: string): Promise<void> {
@@ -248,7 +250,7 @@ class EvalRunner {
 
   private async runAnswerCase(Case: EvalRunCaseSnapshot, Ctx: AnswerContext): Promise<EvalRunResult> {
     const Started = Date.now()
-    const Answer = await answerCase(Ctx.model, this.retriever, Case.query, {
+    const Answer = await this.worker.answer(Ctx.model, Case.query, {
       temperature: Ctx.temperature,
       search: {
         limit: Ctx.knobs.limit,

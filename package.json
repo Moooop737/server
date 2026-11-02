@@ -12,7 +12,8 @@
     "eval:probe": "tsx --env-file=.env scripts/eval-probe.ts",
     "eval:db:setup": "tsx --env-file=.env scripts/eval-db-setup.ts",
     "eval:seed": "tsx --env-file=.env scripts/eval-seed.ts",
-    "eval:cases:import": "tsx --env-file=.env scripts/eval-cases-import.ts"
+    "eval:cases:import": "tsx --env-file=.env scripts/eval-cases-import.ts",
+    "cleanup:test": "tsx --env-file=.env scripts/cleanup-test-data.ts"
   },
   "keywords": [],
   "author": "",

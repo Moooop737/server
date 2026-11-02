@@ -5,7 +5,7 @@
  * number[] ↔ halfvec 字面量字符串的转换住本层（vecToHalfvecStr），不外漏；Embedding 只有写侧。
  */
 
-export { getChunksPage, writeChunksWithEmbeddings, deleteChunksByResource, rowToChunk, getChunkByIndex }
+export { getChunksPage, writeChunksWithEmbeddings, deleteChunksByResource, rowToChunk, getChunkByIndex, listChunksByResource }
 export type { Chunk, ChunkPage, Embedding }
 
 import type { Pool } from 'pg'
@@ -74,6 +74,15 @@ async function getChunksPage(Db: Pool, ResourceId: string, Offset: number, Limit
   )
   const Count = await Db.query(`SELECT COUNT(*)::int AS total FROM chunks WHERE ${Where}`, Params)
   return { Items: rows.map(rowToChunk), TotalCount: Number(Count.rows[0]?.total ?? 0) }
+}
+
+// 资源工具拼全文用：按块序一次取全量，不翻页；调用方负责截断
+async function listChunksByResource(Db: Pool, ResourceId: string): Promise<Chunk[]> {
+  const { rows } = await Db.query(
+    `SELECT * FROM chunks WHERE resource_id = $1 AND deleted_at IS NULL ORDER BY chunk_index, id`,
+    [ResourceId],
+  )
+  return rows.map(rowToChunk)
 }
 
 async function writeChunksWithEmbeddings(

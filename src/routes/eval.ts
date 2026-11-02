@@ -67,7 +67,7 @@ class EvalRoute {
     })
 
     app.use('*', createEndpointTrace(repo))
-    app.route('/retrieve', new RetrieveRoute(this.assembly.handle, repo).build())
+    app.route('/retrieve', new RetrieveRoute({ retriever: this.assembly.retriever }, repo).build())
     buildDatasets(app, repo)
     buildCases(app, repo)
     buildConfigs(app, repo, models)
@@ -337,6 +337,10 @@ function buildRuns(app: Hono, Deps: RunRouteDeps): Hono {
     if (typeof Body.dataset_id !== 'string' || !UUID_RE.test(Body.dataset_id)) return bad(c, 'E_BAD_ID', 'dataset_id 需为 UUID')
     if (typeof Body.run_config_id !== 'string' || !UUID_RE.test(Body.run_config_id)) return bad(c, 'E_BAD_ID', 'run_config_id 需为 UUID')
     if (typeof Body.metric_config_id !== 'string' || !UUID_RE.test(Body.metric_config_id)) return bad(c, 'E_BAD_ID', 'metric_config_id 需为 UUID')
+    if (Body.mode !== undefined && Body.mode !== 'retrieval' && Body.mode !== 'answer') {
+      return bad(c, 'E_EVAL_MODE', 'mode 需为 retrieval 或 answer')
+    }
+    const Mode = Body.mode as 'retrieval' | 'answer' | undefined
 
     try {
       const Dataset = await repo.getDataset(Body.dataset_id)
@@ -360,6 +364,7 @@ function buildRuns(app: Hono, Deps: RunRouteDeps): Hono {
         cases: Cases,
         runConfig: RunConfig,
         metricConfig: MetricConfig,
+        ...(Mode === undefined ? {} : { mode: Mode }),
         embedding: { model: embedding.modelId, dimensions: embedding.dimensions },
         corpus: await repo.resourceCounts(),
       })
@@ -548,11 +553,22 @@ function mapWriteError(c: Context, err: unknown, Fallback: string, Message: stri
 }
 
 function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505'
+  return pgErrorCode(err) === '23505'
 }
 
 function isForeignKeyViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23503'
+  return pgErrorCode(err) === '23503'
+}
+
+// Drizzle 把 pg 错误包进 DrizzleQueryError.cause；逐层取 code，顶层与内层都能认
+function pgErrorCode(Err: unknown): string | null {
+  let Current: unknown = Err
+  while (typeof Current === 'object' && Current !== null) {
+    const Code = (Current as { code?: unknown }).code
+    if (typeof Code === 'string') return Code
+    Current = (Current as { cause?: unknown }).cause
+  }
+  return null
 }
 
 function nonEmptyString(Value: unknown): string | null {

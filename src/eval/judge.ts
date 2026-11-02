@@ -1,14 +1,15 @@
 /**
- * judge —— 用 rubric 文本 + 问题 + 回答 + 检索片段，让模型按结构化输出给三维分与 case 级 verdict。
+ * judge —— 用 rubric 文本 + 问题 + 回答 + 检索片段，让模型按 JSON 文本给三维分与 case 级 verdict。
+ * 不走 Output.object：router1 等 OpenAI-compatible 网关不支持 json_schema，纯文本 + zod 校验对在册模型一致可用。
  * 没有默认模型（OQ-7.4-2）：调用方传句柄，null 表示不跑；不强制与被评模型不同源。
  * rubric 存版本名（OQ-7.4-3）：正文住在版本表，建 run 时由 snapshot 冻结实际文本。
  * 失败不抛：回 error 让该 case 继续，run 不因 judge 单条失败而中断。
  */
 
-export { resolveRubric, judgeCase, verdictOfScores, RUBRIC_V1 }
+export { resolveRubric, judgeCase, verdictOfScores, parseJudgeOutput, RUBRIC_V1 }
 export type { Rubric }
 
-import { generateText, Output } from 'ai'
+import { generateText, NoObjectGeneratedError, Output } from 'ai'
 import { z } from 'zod'
 
 import type { LanguageModelV4 } from '@ai-sdk/provider'
@@ -56,27 +57,50 @@ async function judgeCase(
   try {
     const Result = await generateText({
       model: Model,
-      output: Output.object({ schema: JudgeSchema }),
       prompt: judgePrompt(Rubric.text, Query, Answer, Citations),
+      output: Output.object({ schema: JudgeSchema }),
     })
-    const Out = Result.output
-    return {
-      groundedness: Out.groundedness,
-      correctness: Out.correctness,
-      citation: Out.citation,
-      verdict: verdictOfScores(Out.groundedness, Out.correctness, Out.citation),
-      reason: Out.reason,
-      error: null,
-    }
+    return judgeResult(Result.output)
   } catch (Err) {
-    return {
-      groundedness: null,
-      correctness: null,
-      citation: null,
-      verdict: null,
-      reason: '',
-      error: Err instanceof Error ? Err.message : String(Err),
-    }
+    if (NoObjectGeneratedError.isInstance(Err) && Err.text !== undefined) return parseJudgeOutput(Err.text)
+    return failedJudge(Err)
+  }
+}
+
+function judgeResult(Out: z.infer<typeof JudgeSchema>): EvalJudgeResult {
+  return {
+    groundedness: Out.groundedness,
+    correctness: Out.correctness,
+    citation: Out.citation,
+    verdict: verdictOfScores(Out.groundedness, Out.correctness, Out.citation),
+    reason: Out.reason,
+    error: null,
+  }
+}
+
+function parseJudgeOutput(Text: string): EvalJudgeResult {
+  const Start = Text.indexOf('{')
+  const End = Text.lastIndexOf('}')
+  if (Start < 0 || End <= Start) return failedJudge('judge 没有返回 JSON 对象')
+  let Raw: unknown
+  try {
+    Raw = JSON.parse(Text.slice(Start, End + 1))
+  } catch (Err) {
+    return failedJudge(Err)
+  }
+  const Parsed = JudgeSchema.safeParse(Raw)
+  if (!Parsed.success) return failedJudge(Parsed.error.issues.map((Item) => `${Item.path.join('.')}: ${Item.message}`).join('; '))
+  return judgeResult(Parsed.data)
+}
+
+function failedJudge(Err: unknown): EvalJudgeResult {
+  return {
+    groundedness: null,
+    correctness: null,
+    citation: null,
+    verdict: null,
+    reason: '',
+    error: Err instanceof Error ? Err.message : String(Err),
   }
 }
 
@@ -89,5 +113,5 @@ function judgePrompt(RubricText: string, Query: string, Answer: string, Citation
     .slice(0, MAX_SNIPPETS)
     .map((Item) => `[${Item.chunkId.slice(0, 8)}] ${Item.content.slice(0, MAX_SNIPPET_CHARS)}`)
     .join('\n\n')
-  return `${RubricText}\n\n## 问题\n${Query}\n\n## 回答\n${Answer}\n\n## 检索片段\n${Snippets === '' ? '（没有检索到片段）' : Snippets}`
+  return `${RubricText}\n\n只输出一个 JSON 对象（不要 Markdown 代码围栏、不要解释）：\n{"groundedness":0-2,"correctness":0-2,"citation":0-2,"verdict":"pass|fail","reason":"一句中文"}\n\n## 问题\n${Query}\n\n## 回答\n${Answer}\n\n## 检索片段\n${Snippets === '' ? '（没有检索到片段）' : Snippets}`
 }

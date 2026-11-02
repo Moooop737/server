@@ -333,5 +333,11 @@ function hostnameOf(Url: string): string {
 }
 
 function isUniqueViolation(Err: unknown): boolean {
-  return typeof Err === 'object' && Err !== null && (Err as { code?: unknown }).code === '23505'
+  let Current: unknown = Err
+  while (typeof Current === 'object' && Current !== null) {
+    const Code = (Current as { code?: unknown }).code
+    if (typeof Code === 'string') return Code === '23505'
+    Current = (Current as { cause?: unknown }).cause
+  }
+  return false
 }

@@ -3,7 +3,8 @@
  * 一行 run 自带完整历史：snapshot 是输入（题集逐条 + 两份配置 + embedding + 语料），results 是输出（逐条数字）。
  * results 用 jsonb 数组追加（`||`），不建明细表；聚合与 7.3 对照都在读取时算。
  * 删除只接结束态（由路由判定）；删行同时清掉数据集的 baseline_run_id，避免悬空。
- * getChunkByDataUri 供 gold 失效校验：按资源 data_uri + 块号取未删块，前缀比对由调用方做。
+ * getChunkByDataUri 供 gold 失效校验：按资源 data_uri + 块号取未删块，前缀比对由调用方做；它 join chunks，保留裸 SQL。
+ * 其余全部走 Drizzle；时间戳经 sql`now()` 由数据库时钟写。
  */
 
 export {
@@ -12,10 +13,11 @@ export {
 }
 export type { EvalRun, EvalRunStatus, EvalRunSnapshot, EvalRunCaseSnapshot, EvalRunResult, EvalHumanResult, EvalVerdict, EvalAssertionCheck, EvalAssertionResult, EvalJudgeResult, EvalCitation }
 
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { rowToChunk } from './chunk'
-import { logError } from '../../trace/systemtrace/log'
-
+import { eval_datasets, eval_runs } from './orm/schema'
 import type { Pool } from 'pg'
+import type { Orm } from './orm/client'
 import type { Chunk } from './chunk'
 import type { EvalGold, EvalAssertions } from './eval'
 import type { ResourceCounts } from './resource'
@@ -38,6 +40,7 @@ interface EvalRunSnapshot {
   run_config: { id: string; name: string; config: Record<string, unknown> }
   metric_config: { id: string; name: string; config: Record<string, unknown> }
   rubric?: { version: string; text: string } | null
+  mode?: 'retrieval' | 'answer'
   embedding: { model: string; dimensions: number }
   corpus: ResourceCounts
 }
@@ -144,125 +147,106 @@ function rowToRun(r: any): EvalRun {
 }
 
 async function createRun(
-  Db: Pool,
+  Db: Orm,
   Data: { dataset_id: string; run_config_id: string; metric_config_id: string; snapshot: EvalRunSnapshot },
 ): Promise<EvalRun> {
-  const { rows } = await Db.query(
-    `INSERT INTO eval_runs (dataset_id, run_config_id, metric_config_id, snapshot)
-       VALUES ($1, $2, $3, $4::jsonb)
-     RETURNING *`,
-    [Data.dataset_id, Data.run_config_id, Data.metric_config_id, JSON.stringify(Data.snapshot)],
-  )
+  const rows = await Db.insert(eval_runs).values({
+    dataset_id: Data.dataset_id,
+    run_config_id: Data.run_config_id,
+    metric_config_id: Data.metric_config_id,
+    snapshot: Data.snapshot,
+  }).returning()
   return rowToRun(rows[0])
 }
 
-async function getRun(Db: Pool, Id: string): Promise<EvalRun | null> {
-  const { rows } = await Db.query(`SELECT * FROM eval_runs WHERE id = $1`, [Id])
+async function getRun(Db: Orm, Id: string): Promise<EvalRun | null> {
+  const rows = await Db.select().from(eval_runs).where(eq(eval_runs.id, Id)).limit(1)
   return rows[0] ? rowToRun(rows[0]) : null
 }
 
-async function listRuns(Db: Pool, DatasetId: string | null, RunConfigId: string | null = null): Promise<EvalRun[]> {
-  const { rows } = await Db.query(
-    `SELECT * FROM eval_runs
-      WHERE ($1::uuid IS NULL OR dataset_id = $1)
-        AND ($2::uuid IS NULL OR run_config_id = $2)
-      ORDER BY created_at DESC, id DESC`,
-    [DatasetId, RunConfigId],
-  )
+async function listRuns(Db: Orm, DatasetId: string | null, RunConfigId: string | null = null): Promise<EvalRun[]> {
+  const rows = await Db.select()
+    .from(eval_runs)
+    .where(and(
+      DatasetId === null ? undefined : eq(eval_runs.dataset_id, DatasetId),
+      RunConfigId === null ? undefined : eq(eval_runs.run_config_id, RunConfigId),
+    ))
+    .orderBy(desc(eval_runs.created_at), desc(eval_runs.id))
   return rows.map(rowToRun)
 }
 
-async function appendRunResult(Db: Pool, Id: string, Result: EvalRunResult): Promise<boolean> {
-  const { rowCount } = await Db.query(
-    `UPDATE eval_runs SET results = results || $2::jsonb WHERE id = $1`,
-    [Id, JSON.stringify([Result])],
-  )
-  return rowCount === 1
+async function appendRunResult(Db: Orm, Id: string, Result: EvalRunResult): Promise<boolean> {
+  const rows = await Db.update(eval_runs)
+    .set({ results: sql`${eval_runs.results} || ${JSON.stringify([Result])}::jsonb` })
+    .where(eq(eval_runs.id, Id))
+    .returning({ id: eval_runs.id })
+  return rows.length === 1
 }
 
-async function setHumanResult(Db: Pool, RunId: string, Entry: EvalHumanResult): Promise<EvalHumanResult[] | null> {
-  const client = await Db.connect()
-  try {
-    await client.query('BEGIN')
-    const { rows } = await client.query(`SELECT human_results FROM eval_runs WHERE id = $1 FOR UPDATE`, [RunId])
-    if (!rows[0]) {
-      await client.query('ROLLBACK')
-      return null
-    }
+async function setHumanResult(Db: Orm, RunId: string, Entry: EvalHumanResult): Promise<EvalHumanResult[] | null> {
+  return Db.transaction(async (Tx) => {
+    const rows = await Tx.select({ human_results: eval_runs.human_results })
+      .from(eval_runs)
+      .where(eq(eval_runs.id, RunId))
+      .for('update')
+    if (!rows[0]) return null
     const Existing = Array.isArray(rows[0].human_results) ? (rows[0].human_results as EvalHumanResult[]) : []
     const Next = [...Existing.filter((Item) => Item.case_key !== Entry.case_key), Entry]
-    await client.query(`UPDATE eval_runs SET human_results = $2::jsonb WHERE id = $1`, [RunId, JSON.stringify(Next)])
-    await client.query('COMMIT')
+    await Tx.update(eval_runs).set({ human_results: Next }).where(eq(eval_runs.id, RunId))
     return Next
-  } catch (err) {
-    await client.query('ROLLBACK').catch((rbErr) => logError('E_ROLLBACK', String(rbErr)))
-    throw err
-  } finally {
-    client.release()
-  }
+  })
 }
 
-async function startRun(Db: Pool, Id: string): Promise<boolean> {
-  const { rowCount } = await Db.query(
-    `UPDATE eval_runs
-        SET status = 'running', started_at = COALESCE(started_at, now())
-      WHERE id = $1 AND status = 'queued'`,
-    [Id],
-  )
-  return rowCount === 1
+async function startRun(Db: Orm, Id: string): Promise<boolean> {
+  const rows = await Db.update(eval_runs)
+    .set({ status: 'running', started_at: sql`coalesce(${eval_runs.started_at}, now())` })
+    .where(and(eq(eval_runs.id, Id), eq(eval_runs.status, 'queued')))
+    .returning({ id: eval_runs.id })
+  return rows.length === 1
 }
 
 async function finishRun(
-  Db: Pool,
+  Db: Orm,
   Id: string,
   Status: 'done' | 'failed' | 'cancelled',
   Data: { duration_ms: number; error_reason?: string | null },
 ): Promise<boolean> {
-  const { rowCount } = await Db.query(
-    `UPDATE eval_runs
-        SET status = $2, ended_at = now(), duration_ms = $3, error_reason = $4
-      WHERE id = $1`,
-    [Id, Status, Data.duration_ms, Data.error_reason ?? null],
-  )
-  return rowCount === 1
+  const rows = await Db.update(eval_runs)
+    .set({
+      status: Status,
+      ended_at: sql`now()`,
+      duration_ms: Data.duration_ms,
+      error_reason: Data.error_reason ?? null,
+    })
+    .where(eq(eval_runs.id, Id))
+    .returning({ id: eval_runs.id })
+  return rows.length === 1
 }
 
-async function cancelQueuedRun(Db: Pool, Id: string): Promise<boolean> {
-  const { rowCount } = await Db.query(
-    `UPDATE eval_runs
-        SET status = 'cancelled', ended_at = now(), error_reason = '已取消'
-      WHERE id = $1 AND status = 'queued'`,
-    [Id],
-  )
-  return rowCount === 1
+async function cancelQueuedRun(Db: Orm, Id: string): Promise<boolean> {
+  const rows = await Db.update(eval_runs)
+    .set({ status: 'cancelled', ended_at: sql`now()`, error_reason: '已取消' })
+    .where(and(eq(eval_runs.id, Id), eq(eval_runs.status, 'queued')))
+    .returning({ id: eval_runs.id })
+  return rows.length === 1
 }
 
-async function markInterruptedRuns(Db: Pool): Promise<number> {
-  const { rowCount } = await Db.query(
-    `UPDATE eval_runs
-        SET status = 'cancelled', ended_at = now(), error_reason = '进程重启'
-      WHERE status IN ('queued', 'running')`,
-  )
-  return rowCount ?? 0
+async function markInterruptedRuns(Db: Orm): Promise<number> {
+  const rows = await Db.update(eval_runs)
+    .set({ status: 'cancelled', ended_at: sql`now()`, error_reason: '进程重启' })
+    .where(inArray(eval_runs.status, ['queued', 'running']))
+    .returning({ id: eval_runs.id })
+  return rows.length
 }
 
-async function deleteRun(Db: Pool, Id: string): Promise<boolean> {
-  const client = await Db.connect()
-  try {
-    await client.query('BEGIN')
-    await client.query(
-      `UPDATE eval_datasets SET baseline_run_id = NULL, updated_at = now() WHERE baseline_run_id = $1`,
-      [Id],
-    )
-    const { rowCount } = await client.query(`DELETE FROM eval_runs WHERE id = $1`, [Id])
-    await client.query('COMMIT')
-    return rowCount === 1
-  } catch (err) {
-    await client.query('ROLLBACK').catch((rbErr) => logError('E_ROLLBACK', String(rbErr)))
-    throw err
-  } finally {
-    client.release()
-  }
+async function deleteRun(Db: Orm, Id: string): Promise<boolean> {
+  return Db.transaction(async (Tx) => {
+    await Tx.update(eval_datasets)
+      .set({ baseline_run_id: null, updated_at: sql`now()` })
+      .where(eq(eval_datasets.baseline_run_id, Id))
+    const rows = await Tx.delete(eval_runs).where(eq(eval_runs.id, Id)).returning({ id: eval_runs.id })
+    return rows.length === 1
+  })
 }
 
 async function getChunkByDataUri(Db: Pool, Uri: string, ChunkIndex: number): Promise<Chunk | null> {

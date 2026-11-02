@@ -14,6 +14,7 @@ interface SnapshotInput {
   cases: EvalCase[]
   runConfig: EvalConfig
   metricConfig: EvalConfig
+  mode?: 'retrieval' | 'answer'
   embedding: { model: string; dimensions: number }
   corpus: ResourceCounts
 }
@@ -38,6 +39,7 @@ function buildSnapshot(Input: SnapshotInput): EvalRunSnapshot {
     run_config: { id: Input.runConfig.id, name: Input.runConfig.name, config: { ...Input.runConfig.config } },
     metric_config: { id: Input.metricConfig.id, name: Input.metricConfig.name, config: { ...Input.metricConfig.config } },
     rubric: JudgeConfigured ? resolveRubric(Input.metricConfig.config.rubric) : null,
+    ...(Input.mode === undefined ? {} : { mode: Input.mode }),
     embedding: { model: Input.embedding.model, dimensions: Input.embedding.dimensions },
     corpus: { ...Input.corpus },
   }

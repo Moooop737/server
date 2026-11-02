@@ -1,14 +1,15 @@
 /**
  * ZIP 中央目录检查 —— 只读条目元数据，不解压正文、不写条目文件、不执行仓库内容。
- * 读的是上传到 MinIO 的原始 ZIP 的临时副本；返回扁平清单，树由 path 合成。
- * 路径策略、特殊文件、重名、加密与不可解码条目都在这里拒绝；默认忽略 .git / node_modules / dist / build。
+ * 两个入口：本地文件（测试/离线）与随机读 reader（complete 直接走 S3 range，不落临时文件）。
+ * 返回扁平清单，树由 path 合成。路径策略、特殊文件、重名、加密与不可解码条目都在这里拒绝；默认忽略 .git / node_modules / dist / build。
  */
 
-export { inspectZip, ZipError }
+export { inspectZip, inspectZipReader, ZipError }
 export type { ZipEntryRecord, ZipInspection }
 
-import { openPromise } from 'yauzl'
-import type { Entry, ZipFile } from 'yauzl'
+import { fromRandomAccessReaderPromise, openPromise } from 'yauzl'
+import type { Entry, RandomAccessReader, ZipFile } from 'yauzl'
+import { ObjectStoreError } from '../adapter/storage/object-store'
 
 type ZipErrorCode =
   | 'E_ZIP_INVALID'
@@ -50,15 +51,29 @@ const UNIX_TYPE_MASK = 0o170000
 const UNIX_REGULAR = 0o100000
 const UNIX_DIRECTORY = 0o040000
 const UNIX_SYMLINK = 0o120000
+const ZIP_OPTIONS = { lazyEntries: true, autoClose: false, validateEntrySizes: false, strictFileNames: true }
 
 async function inspectZip(FilePath: string): Promise<ZipInspection> {
   let zip: ZipFile
   try {
-    zip = await openPromise(FilePath, { lazyEntries: true, autoClose: false, validateEntrySizes: false, strictFileNames: true })
+    zip = await openPromise(FilePath, ZIP_OPTIONS)
   } catch (err) {
     throw classifyZipError(err, 'ZIP 无法读取')
   }
+  return inspectOpenedZip(zip)
+}
 
+async function inspectZipReader(Reader: RandomAccessReader, Size: number): Promise<ZipInspection> {
+  let zip: ZipFile
+  try {
+    zip = await fromRandomAccessReaderPromise(Reader, Size, ZIP_OPTIONS)
+  } catch (err) {
+    throw classifyZipError(err, 'ZIP 无法读取')
+  }
+  return inspectOpenedZip(zip)
+}
+
+async function inspectOpenedZip(zip: ZipFile): Promise<ZipInspection> {
   const Manifest: ZipEntryRecord[] = []
   const Seen = new Set<string>()
   let FileCount = 0
@@ -133,6 +148,7 @@ function normalizeEntryPath(Raw: string, IsDir: boolean): string {
 }
 
 function classifyZipError(Err: unknown, Prefix: string): ZipError {
+  if (Err instanceof ObjectStoreError) throw Err
   const Message = errMessage(Err)
   if (/invalid relative path|absolute path|backslash|invalid characters/i.test(Message)) {
     return new ZipError('E_ZIP_PATH', `${Prefix}: ${Message}`)

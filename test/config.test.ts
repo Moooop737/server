@@ -107,5 +107,8 @@ describe('AppConfig 失败路径', () => {
     expect(Res.Error).toBeUndefined()
     expect(Res.Status).toBe(0)
     expect(Res.Text).toContain('CONFIG_OK')
+    
   })
+
+  
 })

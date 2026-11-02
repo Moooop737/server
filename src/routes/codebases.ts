@@ -62,7 +62,7 @@ class CodebasesRoute {
           First = await repo.listCodebases((ShownPage - 1) * PerPage, PerPage, Search)
         }
         return c.json({
-          codebases: First.Items.map(withoutManifest),
+          codebases: First.Items,
           pagination: { page: ShownPage, per_page: PerPage, total_count: First.TotalCount, total_pages: TotalPages },
         })
       } catch (err) {
@@ -75,9 +75,9 @@ class CodebasesRoute {
       const id = c.req.param('id')
       if (!uuidOk(id)) return c.json({ code: 'E_BAD_ID', message: 'id 需为 UUID' }, 400)
       try {
-        const codebase = await repo.getCodebase(id)
+        const codebase = await repo.getCodebaseSummary(id)
         if (!codebase) return c.json({ code: 'E_NOT_FOUND', message: '代码库不存在' }, 404)
-        return c.json({ codebase: withoutManifest(codebase) })
+        return c.json({ codebase })
       } catch (err) {
         logError('E_CODEBASE_READ', String(err))
         return c.json({ code: 'E_CODEBASE_READ', message: '读取代码库失败' }, 500)
@@ -172,7 +172,7 @@ class CodebasesRoute {
       if (!uuidOk(id)) return c.json({ code: 'E_BAD_ID', message: 'id 需为 UUID' }, 400)
       try {
         const codebase = await archive.complete(id)
-        return c.json({ codebase: withoutManifest(codebase) }, 200)
+        return c.json({ codebase }, 200)
       } catch (err) {
         return mapError(c, err, 'E_CODEBASE_COMPLETE', '完成代码库上传失败')
       }
@@ -204,7 +204,7 @@ function mapReadError(c: Context, Err: unknown, Fallback: string, Message: strin
 function mapDeleteError(c: Context, Err: unknown) {
   if (Err instanceof CodebaseDeleteError) {
     const status: 404 | 409 | 500 = Err.code === 'E_NOT_FOUND' ? 404 : Err.code === 'E_PROCESSING' ? 409 : 500
-    return c.json({ code: Err.code, message: Err.message, ...(Err.codebase ? { codebase: withoutManifest(Err.codebase) } : {}) }, status)
+    return c.json({ code: Err.code, message: Err.message, ...(Err.codebase ? { codebase: Err.codebase } : {}) }, status)
   }
   logError('E_CODEBASE_DELETE', String(Err))
   return c.json({ code: 'E_CODEBASE_DELETE', message: '删除代码库失败' }, 500)

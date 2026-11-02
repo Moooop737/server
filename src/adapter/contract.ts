@@ -40,7 +40,7 @@ export { ObjectStoreError } from './storage/object-store'
 export type { Repo, CodebaseRepo, ChunkCandidate, Resource, ResourceStatus, ResourceCounts, Message, Trace, TraceStage, TraceStageInput, TracePayloads, TracePayloadOmitReason, RegistedProviders, RegistedModels }
 export type { EvalDataset, EvalCase, EvalGold, EvalAssertion, EvalAssertions, EvalConfig, EvalConfigKind, EvalCaseInput } from './repo/eval'
 export type { EvalRun, EvalRunStatus, EvalRunSnapshot, EvalRunCaseSnapshot, EvalRunResult, EvalHumanResult, EvalVerdict, EvalAssertionCheck, EvalAssertionResult, EvalJudgeResult, EvalCitation } from './repo/eval-run'
-export type { Codebase, CodebaseEntry, CodebaseStatus } from './repo/codebase'
+export type { Codebase, CodebaseSummary, CodebaseEntry, CodebaseStatus } from './repo/codebase'
 export type { ChatSessionSummary, ChatTraceSummary, ChatTurn, TranscriptMessage } from './repo/observability'
 export type { ObjectStore, ObjectStat, ObjectBody, ObjectGetOptions, ObjectPresignOptions, ObjectPresignPutOptions } from './storage/object-store'
 
@@ -53,13 +53,13 @@ import { createOrm } from './repo/orm/client'
 import {
   createResource, updateResourceStatus, updateResourceTitle, softDeleteResource, markResourceUploaded, restoreResource,
   getResource, getResourceIncludingDeleted, getResourceByContentHash, findActiveBySource, dataUriExists, resourceCounts, markStaleOnBoot,
-  listDeletedResources, purgeResource, listResourcesByUriSuffix,
+  listDeletedResources, purgeResource, listResourcesByUriSuffix, searchResources,
 } from './repo/resource'
 import {
-  createCodebase, getCodebase, listCodebases, updateCodebaseStatus, markCodebaseReady, deleteCodebase,
+  createCodebase, getCodebase, getCodebaseSummary, listCodebases, updateCodebaseStatus, markCodebaseReady, deleteCodebase,
   codebaseDataUriExists, markStaleCodebases,
 } from './repo/codebase'
-import { writeChunksWithEmbeddings, deleteChunksByResource, getChunksPage, getChunkByIndex } from './repo/chunk'
+import { writeChunksWithEmbeddings, deleteChunksByResource, getChunksPage, getChunkByIndex, listChunksByResource } from './repo/chunk'
 import { dimensionsInStore, vectorCandidates } from './repo/search-vector'
 import { lexicalCandidates } from './repo/search-lexical'
 import { insertTrace, finishTrace, setTraceSession, setTraceResource, getTrace, insertTraceStage, listTraceStages } from './repo/trace'
@@ -86,7 +86,7 @@ import type { ObjectStore, ObjectGetOptions, ObjectPresignOptions, ObjectPresign
 import { AppConfig } from '../config'
 import { logError } from '../trace/systemtrace/log'
 import type { Resource, ResourceStatus, ResourceCounts } from './repo/resource'
-import type { Codebase, CodebaseEntry, CodebaseStatus } from './repo/codebase'
+import type { Codebase, CodebaseSummary, CodebaseEntry, CodebaseStatus } from './repo/codebase'
 import type { Chunk, Embedding } from './repo/chunk'
 import type { Session } from './repo/session'
 import type { Message } from './repo/message'
@@ -125,6 +125,7 @@ interface Repo {
   dataUriExists(Uri: string): Promise<boolean>
   softDeleteResource(Id: string): Promise<boolean>
   listResourcesByUriSuffix(Suffix: string): Promise<Resource[]>
+  searchResources(Query: string, Limit: number): Promise<Resource[]>
   getChunkByIndex(ResourceId: string, ChunkIndex: number): Promise<Chunk | null>
 
   writeChunksWithEmbeddings(
@@ -133,6 +134,7 @@ interface Repo {
     Vectors: Pick<Embedding, 'dimension' | 'model' | 'embedding'>[],
   ): Promise<number>
   getChunksPage(ResourceId: string, Offset: number, Limit: number, Search: string): Promise<{ Items: Chunk[]; TotalCount: number }>
+  listChunksByResource(ResourceId: string): Promise<Chunk[]>
   deleteChunksByResource(ResourceId: string): Promise<void>
 
   getSession(Id: string): Promise<Session | null>
@@ -191,13 +193,14 @@ interface CodebaseRepo {
     Data: Pick<Codebase, 'title' | 'original_filename' | 'data_uri' | 'content_type' | 'status'>,
   ): Promise<Codebase>
   getCodebase(Id: string): Promise<Codebase | null>
-  listCodebases(Offset: number, Limit: number, Search: string): Promise<{ Items: Codebase[]; TotalCount: number }>
+  getCodebaseSummary(Id: string): Promise<CodebaseSummary | null>
+  listCodebases(Offset: number, Limit: number, Search: string): Promise<{ Items: CodebaseSummary[]; TotalCount: number }>
   updateCodebaseStatus(Id: string, Status: CodebaseStatus, Reason?: string): Promise<boolean>
   markCodebaseReady(
     Id: string,
     Data: Pick<Codebase, 'storage_size_bytes' | 'manifest' | 'file_count' | 'declared_uncompressed_bytes'>,
-  ): Promise<Codebase | null>
-  deleteCodebase(Id: string): Promise<Codebase | null>
+  ): Promise<CodebaseSummary | null>
+  deleteCodebase(Id: string): Promise<CodebaseSummary | null>
   codebaseDataUriExists(Uri: string): Promise<boolean>
   markStaleCodebases(): Promise<{ processing: number; uploads: number }>
 }
@@ -280,7 +283,7 @@ class PostgresRepo implements Repo {
   }
 
   markStaleOnBoot() {
-    return markStaleOnBoot(this.db)
+    return markStaleOnBoot(this.orm)
   }
 
   vectorCandidates(QueryVector: number[], Limit: number, Dim: number) {
@@ -295,7 +298,7 @@ class PostgresRepo implements Repo {
     Data: Pick<Resource, 'title' | 'source' | 'data_uri' | 'content_type' | 'status'>
       & Partial<Pick<Resource, 'storage_size_bytes' | 'content_hash'>>,
   ) {
-    return createResource(this.db, Data)
+    return createResource(this.orm, Data)
   }
 
   getResource(Id: string) {
@@ -311,35 +314,35 @@ class PostgresRepo implements Repo {
   }
 
   listDeletedResources(Offset: number, Limit: number, Search: string, Sort?: string, Order?: 'asc' | 'desc') {
-    return listDeletedResources(this.db, Offset, Limit, Search, Sort, Order)
+    return listDeletedResources(this.orm, Offset, Limit, Search, Sort, Order)
   }
 
   purgeResource(Id: string) {
-    return purgeResource(this.db, Id)
+    return purgeResource(this.orm, Id)
   }
 
   resourceCounts() {
-    return resourceCounts(this.db)
+    return resourceCounts(this.orm)
   }
 
   updateResourceStatus(Id: string, Status: ResourceStatus, Reason?: string) {
-    return updateResourceStatus(this.db, Id, Status, Reason)
+    return updateResourceStatus(this.orm, Id, Status, Reason)
   }
 
   updateResourceTitle(Id: string, Title: string) {
-    return updateResourceTitle(this.db, Id, Title)
+    return updateResourceTitle(this.orm, Id, Title)
   }
 
   markResourceUploaded(Id: string, Size: number, ContentType?: string) {
-    return markResourceUploaded(this.db, Id, Size, ContentType)
+    return markResourceUploaded(this.orm, Id, Size, ContentType)
   }
 
   restoreResource(Id: string) {
-    return restoreResource(this.db, Id)
+    return restoreResource(this.orm, Id)
   }
 
   findActiveBySource(Url: string) {
-    return findActiveBySource(this.db, Url)
+    return findActiveBySource(this.orm, Url)
   }
 
   dataUriExists(Uri: string) {
@@ -347,11 +350,15 @@ class PostgresRepo implements Repo {
   }
 
   softDeleteResource(Id: string) {
-    return softDeleteResource(this.db, Id)
+    return softDeleteResource(this.orm, Id)
   }
 
   listResourcesByUriSuffix(Suffix: string) {
     return listResourcesByUriSuffix(this.db, Suffix)
+  }
+
+  searchResources(Query: string, Limit: number) {
+    return searchResources(this.orm, Query, Limit)
   }
 
   getChunkByIndex(ResourceId: string, ChunkIndex: number) {
@@ -370,184 +377,188 @@ class PostgresRepo implements Repo {
     return getChunksPage(this.db, ResourceId, Offset, Limit, Search)
   }
 
+  listChunksByResource(ResourceId: string) {
+    return listChunksByResource(this.db, ResourceId)
+  }
+
   deleteChunksByResource(ResourceId: string) {
     return deleteChunksByResource(this.db, ResourceId)
   }
 
   getSession(Id: string) {
-    return getSession(this.db, Id)
+    return getSession(this.orm, Id)
   }
 
   createMessage(Data: Pick<Message, 'session_id' | 'role' | 'content' | 'parts'> & Partial<Pick<Message, 'trace_id'>>) {
-    return createMessage(this.db, Data)
+    return createMessage(this.orm, Data)
   }
 
   getMessagesBySession(SessionId: string) {
-    return getMessagesBySession(this.db, SessionId)
+    return getMessagesBySession(this.orm, SessionId)
   }
 
   insertTrace(Entry: TraceStart) {
-    return insertTrace(this.db, Entry)
+    return insertTrace(this.orm, Entry)
   }
 
   finishTrace(TraceId: string, Finish: TraceFinish) {
-    return finishTrace(this.db, TraceId, Finish)
+    return finishTrace(this.orm, TraceId, Finish)
   }
 
   setTraceSession(TraceId: string, SessionId: string) {
-    return setTraceSession(this.db, TraceId, SessionId)
+    return setTraceSession(this.orm, TraceId, SessionId)
   }
 
   setTraceResource(TraceId: string, ResourceId: string) {
-    return setTraceResource(this.db, TraceId, ResourceId)
+    return setTraceResource(this.orm, TraceId, ResourceId)
   }
 
   getTrace(TraceId: string) {
-    return getTrace(this.db, TraceId)
+    return getTrace(this.orm, TraceId)
   }
 
   insertTraceStage(TraceId: string, Stage: TraceStageInput) {
-    return insertTraceStage(this.db, TraceId, Stage)
+    return insertTraceStage(this.orm, TraceId, Stage)
   }
 
   listTraceStages(TraceId: string) {
-    return listTraceStages(this.db, TraceId)
+    return listTraceStages(this.orm, TraceId)
   }
 
   listChatSessions(Offset: number, Limit: number) {
-    return listChatSessions(this.db, Offset, Limit)
+    return listChatSessions(this.orm, Offset, Limit)
   }
 
   getChatTrace(TraceId: string) {
-    return getChatTrace(this.db, TraceId)
+    return getChatTrace(this.orm, TraceId)
   }
 
   getSessionTranscript(SessionId: string) {
-    return getSessionTranscript(this.db, SessionId)
+    return getSessionTranscript(this.orm, SessionId)
   }
 
   listDatasets() {
-    return listDatasets(this.db)
+    return listDatasets(this.orm)
   }
 
   getDataset(Id: string) {
-    return getDataset(this.db, Id)
+    return getDataset(this.orm, Id)
   }
 
   createDataset(Data: { name: string; note: string }) {
-    return createDataset(this.db, Data)
+    return createDataset(this.orm, Data)
   }
 
   updateDataset(Id: string, Data: { name: string; note: string }) {
-    return updateDataset(this.db, Id, Data)
+    return updateDataset(this.orm, Id, Data)
   }
 
   setDatasetBaseline(Id: string, RunId: string) {
-    return setDatasetBaseline(this.db, Id, RunId)
+    return setDatasetBaseline(this.orm, Id, RunId)
   }
 
   countRunsOfDataset(DatasetId: string) {
-    return countRunsOfDataset(this.db, DatasetId)
+    return countRunsOfDataset(this.orm, DatasetId)
   }
 
   deleteDataset(Id: string) {
-    return deleteDataset(this.db, Id)
+    return deleteDataset(this.orm, Id)
   }
 
   duplicateDataset(Id: string) {
-    return duplicateDataset(this.db, Id)
+    return duplicateDataset(this.orm, Id)
   }
 
   listCases(DatasetId: string) {
-    return listCases(this.db, DatasetId)
+    return listCases(this.orm, DatasetId)
   }
 
   getCase(Id: string) {
-    return getCase(this.db, Id)
+    return getCase(this.orm, Id)
   }
 
   createCase(DatasetId: string, Data: EvalCaseInput) {
-    return createCase(this.db, DatasetId, Data)
+    return createCase(this.orm, DatasetId, Data)
   }
 
   updateCase(Id: string, Data: Omit<EvalCaseInput, 'case_key'>) {
-    return updateCase(this.db, Id, Data)
+    return updateCase(this.orm, Id, Data)
   }
 
   deleteCase(Id: string) {
-    return deleteCase(this.db, Id)
+    return deleteCase(this.orm, Id)
   }
 
   nextCaseKey(DatasetId: string, Level: string) {
-    return nextCaseKey(this.db, DatasetId, Level)
+    return nextCaseKey(this.orm, DatasetId, Level)
   }
 
   upsertCase(DatasetId: string, Data: EvalCaseInput & { case_key: string }) {
-    return upsertCase(this.db, DatasetId, Data)
+    return upsertCase(this.orm, DatasetId, Data)
   }
 
   listConfigs(Kind: EvalConfigKind) {
-    return listConfigs(this.db, Kind)
+    return listConfigs(this.orm, Kind)
   }
 
   getConfig(Id: string) {
-    return getConfig(this.db, Id)
+    return getConfig(this.orm, Id)
   }
 
   createConfig(Data: { kind: EvalConfigKind; name: string; config: Record<string, unknown> }) {
-    return createConfig(this.db, Data)
+    return createConfig(this.orm, Data)
   }
 
   updateConfig(Id: string, Data: { name: string; config: Record<string, unknown> }) {
-    return updateConfig(this.db, Id, Data)
+    return updateConfig(this.orm, Id, Data)
   }
 
   deleteConfig(Id: string) {
-    return deleteConfig(this.db, Id)
+    return deleteConfig(this.orm, Id)
   }
 
   duplicateConfig(Id: string) {
-    return duplicateConfig(this.db, Id)
+    return duplicateConfig(this.orm, Id)
   }
 
   createRun(Data: { dataset_id: string; run_config_id: string; metric_config_id: string; snapshot: EvalRunSnapshot }) {
-    return createRun(this.db, Data)
+    return createRun(this.orm, Data)
   }
 
   getRun(Id: string) {
-    return getRun(this.db, Id)
+    return getRun(this.orm, Id)
   }
 
   listRuns(DatasetId: string | null, RunConfigId: string | null = null) {
-    return listRuns(this.db, DatasetId, RunConfigId)
+    return listRuns(this.orm, DatasetId, RunConfigId)
   }
 
   appendRunResult(Id: string, Result: EvalRunResult) {
-    return appendRunResult(this.db, Id, Result)
+    return appendRunResult(this.orm, Id, Result)
   }
 
   startRun(Id: string) {
-    return startRun(this.db, Id)
+    return startRun(this.orm, Id)
   }
 
   finishRun(Id: string, Status: 'done' | 'failed' | 'cancelled', Data: { duration_ms: number; error_reason?: string | null }) {
-    return finishRun(this.db, Id, Status, Data)
+    return finishRun(this.orm, Id, Status, Data)
   }
 
   cancelQueuedRun(Id: string) {
-    return cancelQueuedRun(this.db, Id)
+    return cancelQueuedRun(this.orm, Id)
   }
 
   markInterruptedRuns() {
-    return markInterruptedRuns(this.db)
+    return markInterruptedRuns(this.orm)
   }
 
   deleteRun(Id: string) {
-    return deleteRun(this.db, Id)
+    return deleteRun(this.orm, Id)
   }
 
   setHumanResult(RunId: string, Entry: EvalHumanResult) {
-    return setHumanResult(this.db, RunId, Entry)
+    return setHumanResult(this.orm, RunId, Entry)
   }
 
   getChunkByDataUri(Uri: string, ChunkIndex: number) {
@@ -564,47 +575,51 @@ class EvalPostgresRepo extends PostgresRepo {
 
 @singleton()
 class PostgresCodebaseRepo implements CodebaseRepo {
-  private readonly db: DbHandle['pool']
+  private readonly orm: Orm
 
   constructor(@inject(DbHandle) Db: DbHandle) {
-    this.db = Db.pool
+    this.orm = createOrm(Db.pool)
   }
 
   createCodebase(
     Data: Pick<Codebase, 'title' | 'original_filename' | 'data_uri' | 'content_type' | 'status'>,
   ) {
-    return createCodebase(this.db, Data)
+    return createCodebase(this.orm, Data)
   }
 
   getCodebase(Id: string) {
-    return getCodebase(this.db, Id)
+    return getCodebase(this.orm, Id)
+  }
+
+  getCodebaseSummary(Id: string) {
+    return getCodebaseSummary(this.orm, Id)
   }
 
   listCodebases(Offset: number, Limit: number, Search: string) {
-    return listCodebases(this.db, Offset, Limit, Search)
+    return listCodebases(this.orm, Offset, Limit, Search)
   }
 
   updateCodebaseStatus(Id: string, Status: CodebaseStatus, Reason?: string) {
-    return updateCodebaseStatus(this.db, Id, Status, Reason)
+    return updateCodebaseStatus(this.orm, Id, Status, Reason)
   }
 
   markCodebaseReady(
     Id: string,
     Data: Pick<Codebase, 'storage_size_bytes' | 'manifest' | 'file_count' | 'declared_uncompressed_bytes'>,
   ) {
-    return markCodebaseReady(this.db, Id, Data)
+    return markCodebaseReady(this.orm, Id, Data)
   }
 
   deleteCodebase(Id: string) {
-    return deleteCodebase(this.db, Id)
+    return deleteCodebase(this.orm, Id)
   }
 
   codebaseDataUriExists(Uri: string) {
-    return codebaseDataUriExists(this.db, Uri)
+    return codebaseDataUriExists(this.orm, Uri)
   }
 
   markStaleCodebases() {
-    return markStaleCodebases(this.db)
+    return markStaleCodebases(this.orm)
   }
 }
 
@@ -662,16 +677,20 @@ class RetrieverHandle {
   readonly retriever: Retriever
 
   constructor(
-    @inject(RetrieverFactory) Factory: RetrieverFactory,
+    @inject(RetrieverFactory) private readonly factory: RetrieverFactory,
     @inject(PostgresRepo) Repo: Repo,
-    @inject(EmbeddingHandle) Embedding: EmbeddingHandle,
-    @inject(AppConfig) Config: AppConfig,
+    @inject(EmbeddingHandle) private readonly embedding: EmbeddingHandle,
+    @inject(AppConfig) private readonly config: AppConfig,
   ) {
+    this.retriever = this.forRepo(Repo)
+  }
+
+  forRepo(Repo: Repo): Retriever {
     const recipe: RetrieverRecipe = {
       ...RETRIEVER_RECIPE_NAMES,
-      deps: { repo: Repo, embedding: Embedding, config: Config },
+      deps: { repo: Repo, embedding: this.embedding, config: this.config },
     }
-    this.retriever = Factory.assemble(recipe)
+    return this.factory.assemble(recipe)
   }
 }
 

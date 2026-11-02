@@ -4,7 +4,7 @@
  * 不要手改。
  */
 
-import { pgTable, uniqueIndex, check, uuid, text, timestamp, bigint, foreignKey, jsonb, integer, unique, boolean, pgEnum } from "drizzle-orm/pg-core"
+import { pgTable, uniqueIndex, check, uuid, text, timestamp, bigint, integer, jsonb, foreignKey, unique, boolean, pgEnum } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
 export const resource_status = pgEnum("resource_status", ['uploading', 'uploaded', 'processing', 'ready', 'upload_failed', 'process_failed'])
@@ -31,56 +31,8 @@ export const resources = pgTable("resources", {
 	check("resources_content_hash_sha256", sql`(content_hash IS NULL) OR (content_hash ~ '^[0-9a-f]{64}$'::text)`),
 ]);
 
-export const messages = pgTable("messages", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	session_id: uuid().notNull(),
-	role: text().notNull(),
-	content: text().notNull(),
-	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
-	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
-	deleted_at: timestamp({ withTimezone: true, mode: 'date' }),
-	parts: jsonb().default([]).notNull(),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	sequence: bigint({ mode: "number" }).generatedAlwaysAsIdentity({ name: "messages_sequence_seq", startWith: 1, increment: 1, minValue: 1, maxValue: 9223372036854775807, cache: 1 }),
-}, (table) => [
-	foreignKey({
-			columns: [table.session_id],
-			foreignColumns: [sessions.id],
-			name: "messages_session_id_fkey"
-		}).onDelete("cascade"),
-	check("messages_role_check", sql`role = ANY (ARRAY['user'::text, 'assistant'::text])`),
-]);
-
-export const sessions = pgTable("sessions", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	title: text().notNull(),
-	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
-	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
-	deleted_at: timestamp({ withTimezone: true, mode: 'date' }),
-	group_name: text(),
-	model: text(),
-});
-
-export const trace_stages = pgTable("trace_stages", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	trace_id: text().notNull(),
-	stage: text().notNull(),
-	input: jsonb().notNull(),
-	output: jsonb().notNull(),
-	duration_ms: integer().notNull(),
-	status: text().notNull(),
-	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
-}, (table) => [
-	foreignKey({
-			columns: [table.trace_id],
-			foreignColumns: [traces.id],
-			name: "trace_stages_trace_id_fkey"
-		}).onDelete("cascade"),
-	check("trace_stages_status_check", sql`status = ANY (ARRAY['ok'::text, 'error'::text])`),
-]);
-
 export const traces = pgTable("traces", {
-	id: text().primaryKey().notNull(),
+	id: uuid().primaryKey().notNull(),
 	session_id: uuid(),
 	resource_id: uuid(),
 	route: text().notNull(),
@@ -96,6 +48,60 @@ export const traces = pgTable("traces", {
 }, () => [
 	check("traces_status_check", sql`status = ANY (ARRAY['running'::text, 'ok'::text, 'error'::text, 'cancelled'::text])`),
 ]);
+
+export const trace_stages = pgTable("trace_stages", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	trace_id: uuid().notNull(),
+	stage: text().notNull(),
+	input: jsonb().notNull(),
+	output: jsonb().notNull(),
+	duration_ms: integer().notNull(),
+	status: text().notNull(),
+	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+}, (table) => [
+	foreignKey({
+			columns: [table.trace_id],
+			foreignColumns: [traces.id],
+			name: "trace_stages_trace_id_fkey"
+		}).onDelete("cascade"),
+	check("trace_stages_status_check", sql`status = ANY (ARRAY['ok'::text, 'error'::text])`),
+]);
+
+export const messages = pgTable("messages", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	session_id: uuid().notNull(),
+	role: text().notNull(),
+	content: text().notNull(),
+	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	deleted_at: timestamp({ withTimezone: true, mode: 'date' }),
+	parts: jsonb().default([]).notNull(),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	sequence: bigint({ mode: "number" }).generatedAlwaysAsIdentity({ name: "messages_sequence_seq", startWith: 1, increment: 1, minValue: 1, maxValue: 9223372036854775807, cache: 1 }),
+	trace_id: uuid(),
+}, (table) => [
+	foreignKey({
+			columns: [table.session_id],
+			foreignColumns: [sessions.id],
+			name: "messages_session_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.trace_id],
+			foreignColumns: [traces.id],
+			name: "messages_trace_id_fkey"
+		}).onDelete("set null"),
+	check("messages_role_check", sql`role = ANY (ARRAY['user'::text, 'assistant'::text])`),
+]);
+
+export const sessions = pgTable("sessions", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	title: text().notNull(),
+	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	deleted_at: timestamp({ withTimezone: true, mode: 'date' }),
+	group_name: text(),
+	model: text(),
+});
 
 export const codebases = pgTable("codebases", {
 	id: uuid().defaultRandom().primaryKey().notNull(),
@@ -144,9 +150,9 @@ export const eval_cases = pgTable("eval_cases", {
 	negative: boolean().default(false).notNull(),
 	note: text().default('').notNull(),
 	gold: jsonb().default([]).notNull(),
-	assertions: jsonb().default({ expect: [], reject: [] }).notNull(),
 	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
 	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	assertions: jsonb().default({"expect":[],"reject":[]}).notNull(),
 }, (table) => [
 	foreignKey({
 			columns: [table.dataset_id],
@@ -160,20 +166,7 @@ export const eval_cases = pgTable("eval_cases", {
 	check("eval_cases_gold_array", sql`jsonb_typeof(gold) = 'array'::text`),
 	check("eval_cases_negative_empty_gold", sql`(NOT negative) OR (gold = '[]'::jsonb)`),
 	check("eval_cases_assertions_object", sql`jsonb_typeof(assertions) = 'object'::text`),
-	check("eval_cases_assertions_shape", sql`(jsonb_typeof(assertions -> 'expect'::text) = 'array'::text) AND (jsonb_typeof(assertions -> 'reject'::text) = 'array'::text)`),
-]);
-
-export const eval_configs = pgTable("eval_configs", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	kind: text().notNull(),
-	name: text().notNull(),
-	config: jsonb().notNull(),
-	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
-	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
-}, () => [
-	check("eval_configs_kind_check", sql`kind = ANY (ARRAY['run'::text, 'metric'::text])`),
-	check("eval_configs_name_nonempty", sql`btrim(name) <> ''::text`),
-	check("eval_configs_config_object", sql`jsonb_typeof(config) = 'object'::text`),
+	check("eval_cases_assertions_shape", sql`(jsonb_typeof((assertions -> 'expect'::text)) = 'array'::text) AND (jsonb_typeof((assertions -> 'reject'::text)) = 'array'::text)`),
 ]);
 
 export const eval_runs = pgTable("eval_runs", {
@@ -185,11 +178,11 @@ export const eval_runs = pgTable("eval_runs", {
 	metric_config_id: uuid(),
 	snapshot: jsonb().default({}).notNull(),
 	results: jsonb().default([]).notNull(),
-	human_results: jsonb().default([]).notNull(),
 	started_at: timestamp({ withTimezone: true, mode: 'date' }),
 	ended_at: timestamp({ withTimezone: true, mode: 'date' }),
 	duration_ms: integer(),
 	error_reason: text(),
+	human_results: jsonb().default([]).notNull(),
 }, (table) => [
 	foreignKey({
 			columns: [table.dataset_id],
@@ -209,6 +202,19 @@ export const eval_runs = pgTable("eval_runs", {
 	check("eval_runs_status_check", sql`status = ANY (ARRAY['queued'::text, 'running'::text, 'done'::text, 'failed'::text, 'cancelled'::text])`),
 	check("eval_runs_snapshot_object", sql`jsonb_typeof(snapshot) = 'object'::text`),
 	check("eval_runs_results_array", sql`jsonb_typeof(results) = 'array'::text`),
-	check("eval_runs_human_results_array", sql`jsonb_typeof(human_results) = 'array'::text`),
 	check("eval_runs_duration_nonnegative", sql`(duration_ms IS NULL) OR (duration_ms >= 0)`),
+	check("eval_runs_human_results_array", sql`jsonb_typeof(human_results) = 'array'::text`),
+]);
+
+export const eval_configs = pgTable("eval_configs", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	kind: text().notNull(),
+	name: text().notNull(),
+	config: jsonb().notNull(),
+	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+}, () => [
+	check("eval_configs_kind_check", sql`kind = ANY (ARRAY['run'::text, 'metric'::text])`),
+	check("eval_configs_name_nonempty", sql`btrim(name) <> ''::text`),
+	check("eval_configs_config_object", sql`jsonb_typeof(config) = 'object'::text`),
 ]);

@@ -1,126 +1,64 @@
-export { ChatService }
+/**
+ * 回合核心 —— 只做 SDK 调用：模型、instructions、tools、stepLimit 全部由调用方按次传入。
+ * 不持有 retriever / repo：它们属于工具，worker 用自己那份建好工具再交进来；没有工具时这里完全用不到。
+ * 实例由 worker 各自 new：ChatWorker 与 EvalWorker 各一只，不做共享单例。
+ */
 
-import { createUIMessageStreamResponse, stepCountIs, streamText, toUIMessageStream, type ToolSet, type UIMessage } from 'ai'
-import { ChatHandle, PostgresRepo, RetrieverHandle } from '../../adapter/contract'
-import { inject, singleton } from 'tsyringe';
-import { buildAgentTools } from '../tool/registry';
-import { CHAT_FUNCTION_ID, getLlmtraceBridge } from '../../trace/llmtrace/bridge'
-import { currentTraceId, logError, runWithTrace } from '../../trace/systemtrace/log'
-import type { LanguageModelV4 } from '@ai-sdk/provider';
-import type { Repo } from '../../adapter/contract'
-import { INSTRUCTIONS } from '../prompt/instruction';
-import { AGENT_STEP_LIMIT } from '../step-limit'
-import { SessionHistory } from '../prompt/history';
-import { assistantContent, classifyChatError, resolveTurnFailure, resolveTurnStatus, type ChatFailure } from './outcome';
+export { Chat }
+export type { ChatCallOptions, ChatStreamOptions }
 
-const HISTORY_MESSAGES = 12
+import {
+  generateText,
+  stepCountIs,
+  streamText,
+  type GenerateTextResult,
+  type ModelMessage,
+  type StreamTextResult,
+  type TelemetryOptions,
+  type ToolSet,
+} from 'ai'
 
-@singleton()
-class ChatService {
-  private readonly tools: ToolSet
-  private readonly model: LanguageModelV4
-  private readonly repo: Repo
-  private readonly history: SessionHistory
+import type { LanguageModelV4 } from '@ai-sdk/provider'
 
-  constructor(
-    @inject(ChatHandle) Handle: ChatHandle,
-    @inject(RetrieverHandle) R: RetrieverHandle,
-    @inject(PostgresRepo) Repo: Repo,
-    @inject(SessionHistory) History: SessionHistory) {
-    this.model = Handle.model
-    this.tools = buildAgentTools(R.retriever)
-    this.repo = Repo
-    this.history = History
+interface ChatCallOptions<TOOLS extends ToolSet> {
+  model: LanguageModelV4
+  instructions: string
+  tools: TOOLS
+  stepLimit: number
+  abortSignal?: AbortSignal
+  telemetry?: TelemetryOptions
+  temperature?: number
+}
+
+interface ChatStreamOptions<TOOLS extends ToolSet> extends ChatCallOptions<TOOLS> {
+  onError?: (Event: { error: unknown }) => void
+}
+
+class Chat {
+  stream<TOOLS extends ToolSet>(Messages: ModelMessage[], Options: ChatStreamOptions<TOOLS>): StreamTextResult<TOOLS, any, any> {
+    return streamText({
+      model: Options.model,
+      messages: Messages,
+      instructions: Options.instructions,
+      tools: Options.tools,
+      stopWhen: stepCountIs(Options.stepLimit),
+      ...(Options.abortSignal === undefined ? {} : { abortSignal: Options.abortSignal }),
+      ...(Options.telemetry === undefined ? {} : { telemetry: Options.telemetry }),
+      ...(Options.temperature === undefined ? {} : { temperature: Options.temperature }),
+      ...(Options.onError === undefined ? {} : { onError: Options.onError }),
+    })
   }
 
-  async ask(Query: string, SessionId: string, Signal: AbortSignal, Model?: LanguageModelV4): Promise<Response> {
-    const TraceId = currentTraceId()
-    const StartedMs = Date.now()
-    const withTrace = <T>(Fn: () => T): T => TraceId === undefined ? Fn() : runWithTrace(TraceId, Fn)
-    const Bridge = getLlmtraceBridge()
-    if (TraceId !== undefined) {
-      Bridge?.beginChat({ sessionId: SessionId, localTraceId: TraceId })
-    }
-
-    if (TraceId !== undefined) {
-      try {
-        await this.repo.setTraceSession(TraceId, SessionId)
-      } catch (err) {
-        logError('E_TRACE_WRITE', `更新 trace session 失败: ${String(err)}`)
-      }
-    }
-
-    try {
-      const { uiMessages, modelMessages } = await this.history.loadSessionContext(Query, SessionId, HISTORY_MESSAGES, TraceId)
-      let Failure: ChatFailure | null = null
-
-      const Result = streamText({
-        model: Model ?? this.model,
-        messages: modelMessages,
-        instructions: INSTRUCTIONS,
-        tools: this.tools,
-        stopWhen: stepCountIs(AGENT_STEP_LIMIT),
-        abortSignal: Signal,
-        telemetry: { functionId: CHAT_FUNCTION_ID },
-        onError: ({ error }) => {
-          const Classified = classifyChatError(error)
-          Failure = Classified
-          withTrace(() => logError(Classified.code, `${Classified.message} status=${Classified.statusCode ?? '-'} retryable=${Classified.retryable}`))
-        },
-      })
-
-      const Stream = toUIMessageStream({
-        stream: Result.stream,
-        tools: this.tools,
-        originalMessages: uiMessages,
-        onError: () => '问答失败',
-        /* 中断/取消不落 assistant：半截回答只在界面上标「未完整」，库里留的是一条孤立 user 消息。 */
-        onEnd: (Event) => withTrace(async () => {
-          const { responseMessage, isAborted, isCancelled, outcome } = Event
-          const TurnFailure = resolveTurnFailure(Failure, outcome)
-          const Status = resolveTurnStatus({ isAborted, isCancelled, outcome, failure: TurnFailure })
-          const ErrorCode = Status === 'error' ? TurnFailure?.code ?? 'E_CHAT_STREAM' : null
-          const LangfuseTraceId = TraceId === undefined ? undefined : Bridge?.takeChatTraceId(TraceId)
-
-          if (TraceId !== undefined) {
-            try {
-              await this.repo.finishTrace(TraceId, {
-                ended_at: new Date().toISOString(),
-                duration_ms: Date.now() - StartedMs,
-                http_status: 200,
-                status: Status,
-                error_code: ErrorCode,
-                payloads: null,
-                session_id: SessionId,
-                ...(LangfuseTraceId === undefined ? {} : { langfuse_trace_id: LangfuseTraceId }),
-              })
-            } catch (err) {
-              logError('E_TRACE_WRITE', `流式收口 trace 失败: ${String(err)}`)
-            }
-          }
-
-          if (isAborted || isCancelled) return
-          const Parts = responseMessage.parts
-          const Content = assistantContent(Parts)
-          try {
-            await this.repo.createMessage({
-              session_id: SessionId,
-              trace_id: TraceId ?? null,
-              role: 'assistant',
-              content: Content,
-              parts: Parts,
-            })
-          } catch (err) {
-            logError('E_MESSAGE_SAVE', String(err))
-          }
-        }),
-      })
-
-      return createUIMessageStreamResponse({ stream: Stream })
-    } catch (err) {
-      // 建流前失败不会有 onEnd：把 beginChat 的登记在这里取走，否则 Chats 永久残留
-      if (TraceId !== undefined) Bridge?.takeChatTraceId(TraceId)
-      throw err
-    }
+  generate<TOOLS extends ToolSet>(Messages: ModelMessage[], Options: ChatCallOptions<TOOLS>): Promise<GenerateTextResult<TOOLS, any, any>> {
+    return generateText({
+      model: Options.model,
+      messages: Messages,
+      instructions: Options.instructions,
+      tools: Options.tools,
+      stopWhen: stepCountIs(Options.stepLimit),
+      ...(Options.abortSignal === undefined ? {} : { abortSignal: Options.abortSignal }),
+      ...(Options.telemetry === undefined ? {} : { telemetry: Options.telemetry }),
+      ...(Options.temperature === undefined ? {} : { temperature: Options.temperature }),
+    })
   }
 }

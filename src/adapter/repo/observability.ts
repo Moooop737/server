@@ -5,12 +5,15 @@
  * 会话软删后不再出现在列表；trace 行仍保留，按本地 id 读详情时不因此 404。
  * transcript 的轮 = traces 里这一会话的全部 POST /chat 行（正序）；消息按 messages.trace_id 归到轮上，
  * 没有消息的轮也保留（失败/取消、多轮落库之前的老对话），前端才有状态可看。
+ * 全部走 Drizzle；聚合用 count / countDistinct / max。
  */
 
 export { listChatSessions, getChatTrace, getSessionTranscript }
 export type { ChatSessionSummary, ChatTraceSummary, ChatTurn, TranscriptMessage }
 
-import type { Pool } from 'pg'
+import { and, asc, count, countDistinct, desc, eq, isNotNull, isNull, max } from 'drizzle-orm'
+import { messages, sessions, traces } from './orm/schema'
+import type { Orm } from './orm/client'
 
 interface ChatSessionSummary {
   id: string
@@ -43,6 +46,18 @@ interface TranscriptMessage {
 interface ChatTurn {
   trace: ChatTraceSummary
   messages: TranscriptMessage[]
+}
+
+const ChatTraceColumns = {
+  id: traces.id,
+  session_id: traces.session_id,
+  session_title: sessions.title,
+  status: traces.status,
+  started_at: traces.started_at,
+  ended_at: traces.ended_at,
+  duration_ms: traces.duration_ms,
+  error_code: traces.error_code,
+  langfuse_trace_id: traces.langfuse_trace_id,
 }
 
 function iso(Value: Date | string | null): string | null {
@@ -84,64 +99,66 @@ function rowToTranscriptMessage(Row: any): TranscriptMessage {
   }
 }
 
-async function listChatSessions(Db: Pool, Offset: number, Limit: number): Promise<{ Items: ChatSessionSummary[]; TotalCount: number }> {
-  const { rows } = await Db.query(
-    `SELECT s.id, s.title, s.group_name, s.updated_at,
-            COUNT(t.id)::int AS chat_count,
-            MAX(t.started_at) AS last_chat_at
-       FROM sessions s
-       JOIN traces t ON t.session_id = s.id AND t.route = 'POST /chat'
-      WHERE s.deleted_at IS NULL
-      GROUP BY s.id, s.title, s.group_name, s.updated_at
-      ORDER BY MAX(t.started_at) DESC
-      LIMIT $1 OFFSET $2`,
-    [Limit, Offset],
-  )
-  const Count = await Db.query(
-    `SELECT COUNT(DISTINCT s.id)::int AS total
-       FROM sessions s
-       JOIN traces t ON t.session_id = s.id AND t.route = 'POST /chat'
-      WHERE s.deleted_at IS NULL`,
-  )
-  return { Items: rows.map(rowToChatSession), TotalCount: Number(Count.rows[0]?.total ?? 0) }
+async function listChatSessions(Db: Orm, Offset: number, Limit: number): Promise<{ Items: ChatSessionSummary[]; TotalCount: number }> {
+  const Items = await Db.select({
+    id: sessions.id,
+    title: sessions.title,
+    group_name: sessions.group_name,
+    updated_at: sessions.updated_at,
+    chat_count: count(traces.id),
+    last_chat_at: max(traces.started_at),
+  })
+    .from(sessions)
+    .innerJoin(traces, and(eq(traces.session_id, sessions.id), eq(traces.route, 'POST /chat')))
+    .where(isNull(sessions.deleted_at))
+    .groupBy(sessions.id, sessions.title, sessions.group_name, sessions.updated_at)
+    .orderBy(desc(max(traces.started_at)))
+    .limit(Limit)
+    .offset(Offset)
+  const CountRows = await Db.select({ total: countDistinct(sessions.id) })
+    .from(sessions)
+    .innerJoin(traces, and(eq(traces.session_id, sessions.id), eq(traces.route, 'POST /chat')))
+    .where(isNull(sessions.deleted_at))
+  return { Items: Items.map(rowToChatSession), TotalCount: CountRows[0]!.total }
 }
 
-async function getChatTrace(Db: Pool, TraceId: string): Promise<ChatTraceSummary | null> {
-  const { rows } = await Db.query(
-    `SELECT t.id, t.session_id, s.title AS session_title, t.status, t.started_at, t.ended_at,
-            t.duration_ms, t.error_code, t.langfuse_trace_id
-       FROM traces t
-       LEFT JOIN sessions s ON s.id = t.session_id
-      WHERE t.id = $1 AND t.route = 'POST /chat'`,
-    [TraceId],
-  )
+async function getChatTrace(Db: Orm, TraceId: string): Promise<ChatTraceSummary | null> {
+  const rows = await Db.select(ChatTraceColumns)
+    .from(traces)
+    .leftJoin(sessions, eq(sessions.id, traces.session_id))
+    .where(and(eq(traces.id, TraceId), eq(traces.route, 'POST /chat')))
+    .limit(1)
   return rows[0] ? rowToChatTrace(rows[0]) : null
 }
 
-async function getSessionTranscript(Db: Pool, SessionId: string): Promise<ChatTurn[]> {
-  const Traces = await Db.query(
-    `SELECT t.id, t.session_id, s.title AS session_title, t.status, t.started_at, t.ended_at,
-            t.duration_ms, t.error_code, t.langfuse_trace_id
-       FROM traces t
-       LEFT JOIN sessions s ON s.id = t.session_id
-      WHERE t.route = 'POST /chat' AND t.session_id = $1
-      ORDER BY t.started_at ASC`,
-    [SessionId],
-  )
-  const Messages = await Db.query(
-    `SELECT id, trace_id, role, content, created_at
-       FROM messages
-      WHERE session_id = $1 AND deleted_at IS NULL AND trace_id IS NOT NULL
-      ORDER BY sequence ASC`,
-    [SessionId],
-  )
+async function getSessionTranscript(Db: Orm, SessionId: string): Promise<ChatTurn[]> {
+  const Traces = await Db.select(ChatTraceColumns)
+    .from(traces)
+    .leftJoin(sessions, eq(sessions.id, traces.session_id))
+    .where(and(eq(traces.route, 'POST /chat'), eq(traces.session_id, SessionId)))
+    .orderBy(asc(traces.started_at))
+  const Messages = await Db.select({
+    id: messages.id,
+    trace_id: messages.trace_id,
+    role: messages.role,
+    content: messages.content,
+    created_at: messages.created_at,
+  })
+    .from(messages)
+    .where(and(
+      eq(messages.session_id, SessionId),
+      isNull(messages.deleted_at),
+      isNotNull(messages.trace_id),
+    ))
+    .orderBy(asc(messages.sequence))
   const ByTrace = new Map<string, TranscriptMessage[]>()
-  for (const Row of Messages.rows) {
+  for (const Row of Messages) {
+    if (Row.trace_id === null) continue
     const List = ByTrace.get(Row.trace_id) ?? []
     List.push(rowToTranscriptMessage(Row))
     ByTrace.set(Row.trace_id, List)
   }
-  return Traces.rows.map((Row) => {
+  return Traces.map((Row) => {
     const Trace = rowToChatTrace(Row)
     return { trace: Trace, messages: ByTrace.get(Trace.id) ?? [] }
   })

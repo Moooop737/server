@@ -6,7 +6,9 @@
 export { getSession }
 export type { Session }
 
-import type { Pool } from 'pg'
+import { and, eq, isNull } from 'drizzle-orm'
+import { sessions } from './orm/schema'
+import type { Orm } from './orm/client'
 
 interface timestamp {
   created_at: string
@@ -37,11 +39,10 @@ function rowToSession(r: any): Session {
   }
 }
 
-async function getSession(Db: Pool, Id: string): Promise<Session | null> {
-  const { rows } = await Db.query(
-    `SELECT id, title, group_name, model, created_at, updated_at, deleted_at
-     FROM sessions WHERE id = $1 AND deleted_at IS NULL`,
-    [Id],
-  )
+async function getSession(Db: Orm, Id: string): Promise<Session | null> {
+  const rows = await Db.select()
+    .from(sessions)
+    .where(and(eq(sessions.id, Id), isNull(sessions.deleted_at)))
+    .limit(1)
   return rows[0] ? rowToSession(rows[0]) : null
 }

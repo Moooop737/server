@@ -1,9 +1,9 @@
 /**
- * 问答路由 —— POST /chat，body { query, sessionId, model? }。薄一层：校验 body、确认会话存在、把提问交给 ChatService、把结果转成 UI message stream。
+ * 问答路由 —— POST /chat，body { query, sessionId, model? }。薄一层：校验 body、确认会话存在、把提问交给 ChatWorker、把结果转成 UI message stream。
  * model 可选：body 给了以 body 为准；没给就用会话行记录的 model；都没有才用 CHAT_MODEL。
  *   body 给了但不在册→400 E_UNKNOWN_MODEL，响应带在册清单；会话记录的那只不在册（缺 Key 整行缺席）→ 回落 CHAT_MODEL 并打 W_SESSION_MODEL。
  *   /chat 只读会话的 model，不写：下单一位是前端（建会话/换模型时 PATCH）。
- * 历史由 ChatService 按 sessionId 读库（服务端真源），模型自己看历史决定检索词；本路由不收 messages、不做查询改写。
+ * 历史由 ChatWorker 按 sessionId 读库（服务端真源），模型自己看历史决定检索词；本路由不收 messages、不做查询改写。
  * 检索发生在工具里（agent/tool/retrieve.ts），由模型自己决定调不调、检索什么词、要几条；本路由因此不装配 Retriever，
  *   也没有维度相关的状态码：工具一执行就在 SSE 首帧之后，状态码是一次性的，库中混维只能作为工具的结构化 error 交给模型。
  * 失败映射：body 缺 query/sessionId 或类型不对→400 E_BAD_BODY；query trim 后为空→400 E_EMPTY_QUERY；sessionId 非 UUID→400 E_BAD_ID；model 不在册→400 E_UNKNOWN_MODEL；
@@ -15,7 +15,7 @@ import 'reflect-metadata'
 import { Hono } from 'hono'
 import { inject, injectable } from 'tsyringe'
 import { ChatHandle, PostgresRepo } from '../adapter/contract'
-import { ChatService } from '../agent/chat/chat'
+import { ChatWorker } from '../agent/worker/chat'
 import { logError, logWarn } from '../trace/systemtrace/log'
 
 export { ChatRoute }
@@ -24,12 +24,12 @@ import type { Repo } from '../adapter/contract'
 
 @injectable()
 class ChatRoute {
-  private readonly chat: ChatService
+  private readonly chat: ChatWorker
   private readonly repo: Repo
   private readonly handle: ChatHandle
 
   constructor(
-    @inject(ChatService) Chat: ChatService,
+    @inject(ChatWorker) Chat: ChatWorker,
     @inject(PostgresRepo) Repo: Repo,
     @inject(ChatHandle) Handle: ChatHandle) {
     this.chat = Chat

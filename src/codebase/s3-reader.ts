@@ -10,6 +10,7 @@ import { PassThrough } from 'node:stream'
 import type { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { RandomAccessReader } from 'yauzl'
+import { ObjectStoreError } from '../adapter/storage/object-store'
 import type { ObjectStore } from '../adapter/contract'
 
 const BLOCK_SIZE = 1024 * 1024
@@ -51,7 +52,7 @@ class S3ZipReader extends RandomAccessReader {
     }
     void (async () => {
       const object = await this.store.get(this.key, { range: `bytes=${From}-${To - 1}` })
-      if (!object) throw new Error('ZIP 对象不存在')
+      if (!object) throw new ObjectStoreError('ZIP 对象不存在')
       await pipeline(object.body, Out)
     })().catch((Err) => Out.destroy(Err instanceof Error ? Err : new Error(String(Err))))
     return Out
@@ -101,7 +102,7 @@ class S3ZipReader extends RandomAccessReader {
 
   private async fetchRange(Start: number, Length: number): Promise<Buffer> {
     const object = await this.store.get(this.key, { range: `bytes=${Start}-${Start + Length - 1}` })
-    if (!object) throw new Error('ZIP 对象不存在')
+    if (!object) throw new ObjectStoreError('ZIP 对象不存在')
     const Chunks: Buffer[] = []
     for await (const Chunk of object.body) Chunks.push(Buffer.from(Chunk as Uint8Array))
     return Buffer.concat(Chunks)

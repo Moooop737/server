@@ -10,14 +10,14 @@ import 'reflect-metadata'
 import { inject, singleton } from 'tsyringe'
 import { AppConfig } from '../config'
 import { ObjectStoreHandle, PostgresCodebaseRepo } from '../adapter/contract'
-import type { Codebase, CodebaseRepo } from '../adapter/contract'
+import type { CodebaseSummary, CodebaseRepo } from '../adapter/contract'
 import { parseDataUri } from '../adapter/storage/uri'
 
 class CodebaseDeleteError extends Error {
   readonly code: string
-  readonly codebase: Codebase | null
+  readonly codebase: CodebaseSummary | null
 
-  constructor(Code: string, Message: string, Codebase: Codebase | null = null) {
+  constructor(Code: string, Message: string, Codebase: CodebaseSummary | null = null) {
     super(Message)
     this.name = 'CodebaseDeleteError'
     this.code = Code
@@ -42,7 +42,7 @@ class CodebasePurge {
   }
 
   async delete(Id: string): Promise<void> {
-    const codebase = await this.repo.getCodebase(Id)
+    const codebase = await this.repo.getCodebaseSummary(Id)
     if (!codebase) throw new CodebaseDeleteError('E_NOT_FOUND', '代码库不存在')
     if (codebase.status === 'processing') {
       throw new CodebaseDeleteError('E_PROCESSING', '代码库正在校验，不能删除', codebase)

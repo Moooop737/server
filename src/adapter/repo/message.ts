@@ -1,12 +1,14 @@
 /**
  * message —— chat 的写入与按会话读历史；通用 list/read/create/update/delete 由 routes/crud.ts 注册到 hono-crud。
- * parts 是 UI 真源；sequence 由 identity 递增，读时按正序；每条读都带 deleted_at IS NULL。
+ * parts 是 UI 真源（jsonb，直接收对象）；sequence 由 identity 递增，读时按正序；每条读都带 deleted_at IS NULL。
  */
 
 export { createMessage, getMessagesBySession }
 export type { Message }
 
-import type { Pool } from 'pg'
+import { and, asc, eq, isNull } from 'drizzle-orm'
+import { messages } from './orm/schema'
+import type { Orm } from './orm/client'
 import type { UIMessage } from 'ai'
 
 interface timestamp {
@@ -46,25 +48,23 @@ function rowToMessage(r: any): Message {
 }
 
 async function createMessage(
-  Db: Pool,
+  Db: Orm,
   Data: Pick<Message, 'session_id' | 'role' | 'content' | 'parts'> & Partial<Pick<Message, 'trace_id'>>,
 ): Promise<Message> {
-  const { rows } = await Db.query(
-    `INSERT INTO messages (session_id, trace_id, role, content, parts)
-     VALUES ($1, $2, $3, $4, $5::jsonb)
-     RETURNING id, session_id, trace_id, role, content, parts, sequence, created_at, updated_at, deleted_at`,
-    [Data.session_id, Data.trace_id ?? null, Data.role, Data.content, JSON.stringify(Data.parts)],
-  )
+  const rows = await Db.insert(messages).values({
+    session_id: Data.session_id,
+    trace_id: Data.trace_id ?? null,
+    role: Data.role,
+    content: Data.content,
+    parts: Data.parts,
+  }).returning()
   return rowToMessage(rows[0])
 }
 
-async function getMessagesBySession(Db: Pool, SessionId: string): Promise<Message[]> {
-  const { rows } = await Db.query(
-    `SELECT id, session_id, trace_id, role, content, parts, sequence, created_at, updated_at, deleted_at
-     FROM messages
-     WHERE session_id = $1 AND deleted_at IS NULL
-     ORDER BY sequence ASC`,
-    [SessionId],
-  )
+async function getMessagesBySession(Db: Orm, SessionId: string): Promise<Message[]> {
+  const rows = await Db.select()
+    .from(messages)
+    .where(and(eq(messages.session_id, SessionId), isNull(messages.deleted_at)))
+    .orderBy(asc(messages.sequence))
   return rows.map(rowToMessage)
 }

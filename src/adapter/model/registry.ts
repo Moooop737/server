@@ -6,7 +6,7 @@
  * name 只给人看，不参与任何查找；env 的 CHAT_MODEL / EMBEDDING_MODEL 写的是键，选择发生在装配层，不在这里。
  * provider 不在册（缺 Key 没进表）⇒ 它的行一起静默缺席，和 provider 表同一条登记制规则。
  * 维度不在这里定死：EmbeddingModelV4 句柄没有 dimensions 位，它是调用选项，由调用侧传。
- * 同一家 Ollama 挂两个网关是故意的：嵌入那行走 ollama-compat（/v1），因为原生 /api/embed 实测把 dimensions 整位丢掉、恒回 4096（test/probe-native-embed.ts），MRL 截维只在兼容层生效；
+ * 同一家 Ollama 挂两个网关是故意的：嵌入那行走 ollama-compat（/v1），因为原生 /api/embed 实测把 dimensions 整位丢掉、恒回 4096（结论见 LEARNING.md），MRL 截维只在兼容层生效；
  * 对话那几行留原生，才拿得到 think / num_ctx 这类原生参数。
  * 表里全是字面量，本文件不读 env。
  */

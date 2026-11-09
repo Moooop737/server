@@ -33,11 +33,12 @@
  * 实体形状不再有跨层共享盒（原 `types/` 已删）：别盒要用哪一位，由本门逐个点名交出（现交 Resource 与四张 Drizzle 表）。
  */
 
-export { RetrieverHandle, PostgresRepo, EvalPostgresRepo, PostgresCodebaseRepo, EmbeddingHandle, ChatHandle, ObjectStoreHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, embedChunks }
+export { RetrieverHandle, PostgresRepo, EvalPostgresRepo, PostgresCodebaseRepo, PostgresConfigRepo, EmbeddingHandle, ChatHandle, ObjectStoreHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, embedChunks }
 export { resources, sessions, messages, traces } from './repo/orm/schema'
 export { listChatSessions, getChatTrace, getSessionTranscript } from './repo/observability'
 export { ObjectStoreError } from './storage/object-store'
 export type { Repo, CodebaseRepo, ChunkCandidate, Resource, ResourceStatus, ResourceCounts, Message, Trace, TraceStage, TraceStageInput, TracePayloads, TracePayloadOmitReason, RegistedProviders, RegistedModels }
+export type { ProviderKind, ModelKind, ProviderRow, ModelWithProvider, DefaultRow, ConfigSnapshot, CreateProviderInput, CreateModelInput, UpdateModelInput } from './repo/config'
 export type { EvalDataset, EvalCase, EvalGold, EvalAssertion, EvalAssertions, EvalConfig, EvalConfigKind, EvalCaseInput } from './repo/eval'
 export type { EvalRun, EvalRunStatus, EvalRunSnapshot, EvalRunCaseSnapshot, EvalRunResult, EvalHumanResult, EvalVerdict, EvalAssertionCheck, EvalAssertionResult, EvalJudgeResult, EvalCitation } from './repo/eval-run'
 export type { Codebase, CodebaseSummary, CodebaseEntry, CodebaseStatus } from './repo/codebase'
@@ -75,6 +76,13 @@ import {
   createRun, getRun, listRuns, appendRunResult, setHumanResult, startRun, finishRun, cancelQueuedRun,
   markInterruptedRuns, deleteRun, getChunkByDataUri,
 } from './repo/eval-run'
+import {
+  listProviders, getProvider, getProviderByName, createProvider,
+  setProviderBaseUrl, setProviderEnabled, setProviderApiKey, setProviderHeaders, setProviderQuery, setProviderOptions, deleteProvider,
+  listModels, getModel, createModel, updateModel, deleteModel,
+  listDefaults, getDefault, upsertDefault, deleteDefault, readConfig,
+} from './repo/config'
+import type { CreateProviderInput, CreateModelInput, UpdateModelInput } from './repo/config'
 import { ollamaHealthCheck, ollamaModelList, ollamaStatusList } from './connection/ollama'
 import { type ProviderEntryName } from './provider/registry'
 import { ModelRegistry, type EmbeddingModelId, type LanguageModelId } from './model/registry'
@@ -620,6 +628,99 @@ class PostgresCodebaseRepo implements CodebaseRepo {
 
   markStaleCodebases() {
     return markStaleCodebases(this.orm)
+  }
+}
+
+@singleton()
+class PostgresConfigRepo {
+  private readonly orm: Orm
+
+  constructor(@inject(DbHandle) Db: DbHandle) {
+    this.orm = createOrm(Db.pool)
+  }
+
+  readConfig() {
+    return readConfig(this.orm)
+  }
+
+  listProviders() {
+    return listProviders(this.orm)
+  }
+
+  getProvider(Id: string) {
+    return getProvider(this.orm, Id)
+  }
+
+  getProviderByName(Name: string) {
+    return getProviderByName(this.orm, Name)
+  }
+
+  createProvider(Input: CreateProviderInput) {
+    return createProvider(this.orm, Input)
+  }
+
+  setProviderBaseUrl(Id: string, BaseUrl: string | null) {
+    return setProviderBaseUrl(this.orm, Id, BaseUrl)
+  }
+
+  setProviderEnabled(Id: string, Enabled: boolean) {
+    return setProviderEnabled(this.orm, Id, Enabled)
+  }
+
+  setProviderApiKey(Id: string, Ciphertext: string | null) {
+    return setProviderApiKey(this.orm, Id, Ciphertext)
+  }
+
+  setProviderHeaders(Id: string, Ciphertext: string | null) {
+    return setProviderHeaders(this.orm, Id, Ciphertext)
+  }
+
+  setProviderQuery(Id: string, Query: Record<string, string>) {
+    return setProviderQuery(this.orm, Id, Query)
+  }
+
+  setProviderOptions(Id: string, Options: Record<string, unknown>) {
+    return setProviderOptions(this.orm, Id, Options)
+  }
+
+  deleteProvider(Id: string) {
+    return deleteProvider(this.orm, Id)
+  }
+
+  listModels() {
+    return listModels(this.orm)
+  }
+
+  getModel(Id: string) {
+    return getModel(this.orm, Id)
+  }
+
+  createModel(Input: CreateModelInput) {
+    return createModel(this.orm, Input)
+  }
+
+  updateModel(Id: string, Input: UpdateModelInput) {
+    return updateModel(this.orm, Id, Input)
+  }
+
+  deleteModel(Id: string) {
+    return deleteModel(this.orm, Id)
+  }
+
+  listDefaults() {
+    return listDefaults(this.orm)
+  }
+
+  getDefault(Id: 'default' | 'embedding') {
+    return getDefault(this.orm, Id)
+  }
+
+  upsertDefault(Id: 'default' | 'embedding', ProviderId: string, ModelId: string, DisplayName: string) {
+    return upsertDefault(this.orm, Id, ProviderId, ModelId, DisplayName)
+  }
+
+  deleteDefault(Id: 'default' | 'embedding') {
+    return deleteDefault(this.orm, Id)
   }
 }
 

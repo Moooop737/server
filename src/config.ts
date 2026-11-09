@@ -37,6 +37,7 @@ class AppConfig {
   readonly s3AccessKeyId: string
   readonly s3SecretAccessKey: string
   readonly s3ForcePathStyle: boolean
+  readonly configSecretKey: string | undefined
 
   constructor() {
     const missing: string[] = []
@@ -48,7 +49,7 @@ class AppConfig {
     const s3Bucket = getEnv('S3_BUCKET', missing)
     const s3AccessKeyId = getEnv('S3_ACCESS_KEY_ID', missing)
     const s3SecretAccessKey = getEnv('S3_SECRET_ACCESS_KEY', missing)
-
+    
     if (missing.length > 0) {
       fail('E_CONFIG_MISSING', `必需的环境变量缺失: ${missing.join(', ')}`)
     }
@@ -60,6 +61,7 @@ class AppConfig {
     }
 
     this.port = numOrThrow(getEnv('PORT'), 'PORT', 3000, 1, 65535)
+    this.configSecretKey = getEnv('CONFIG_SECRET_KEY')
     this.databaseUrl = databaseUrl!
     this.evalDatabaseUrl = parseEvalDatabaseUrl(getEnv('EVAL_DATABASE_URL'), this.databaseUrl)
     this.ollamaBaseUrl = ollamaBaseUrl!

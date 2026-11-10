@@ -28,12 +28,24 @@ const Tags = [
   { name: 'Chat', description: '对话' },
   { name: 'Observability', description: '对话观测：列表读本地库，观测内容按 langfuse_trace_id 懒加载' },
   { name: 'Health', description: '服务探针' },
+  { name: 'Config', description: '供应商 / 模型 / 默认模型配置；写接口保存后热更新' },
 ]
 
 const Json = (Schema: object) => ({ 'application/json': { schema: Schema } })
 const Ref = (Name: string) => ({ $ref: `#/components/schemas/${Name}` })
 const Err = (Description: string) => ({ description: Description, content: Json(Ref('Error')) })
 const Ok = (Description: string, Schema: object) => ({ description: Description, content: Json(Schema) })
+
+const ReloadFields = {
+  reload_ok: { type: 'boolean' },
+  reload_error: { type: 'string' },
+}
+
+const WriteSchema = (Key: string, Schema: object) => ({
+  type: 'object',
+  required: [Key, 'reload_ok'],
+  properties: { [Key]: Schema, ...ReloadFields },
+})
 
 const PageSchema = {
   type: 'object',
@@ -699,6 +711,260 @@ const CustomPaths = {
       },
     },
   },
+  '/config/status': {
+    get: {
+      tags: ['Config'],
+      operationId: 'getConfigStatus',
+      summary: '当前运行时快照状态',
+      responses: {
+        200: Ok('生成号、计数、默认可用性、最近一次 reload', Ref('ConfigStatus')),
+        503: Err('运行时配置尚未装载'),
+      },
+    },
+  },
+  '/config/reload': {
+    post: {
+      tags: ['Config'],
+      operationId: 'reloadConfig',
+      summary: '手动重载运行时配置',
+      responses: {
+        200: Ok('重载结果', { type: 'object', required: ['reload_ok'], properties: ReloadFields }),
+      },
+    },
+  },
+  '/config/providers': {
+    get: {
+      tags: ['Config'],
+      operationId: 'listConfigProviders',
+      summary: '供应商列表（脱敏）',
+      responses: {
+        200: Ok('供应商列表', {
+          type: 'object',
+          required: ['providers'],
+          properties: { providers: { type: 'array', items: Ref('ConfigProvider') } },
+        }),
+        500: Err('读取失败'),
+      },
+    },
+    post: {
+      tags: ['Config'],
+      operationId: 'createConfigProvider',
+      summary: '新建供应商',
+      requestBody: { required: true, content: Json(Ref('ConfigProviderCreate')) },
+      responses: {
+        200: Ok('新建结果；写后已尝试热更新', WriteSchema('provider', Ref('ConfigProvider'))),
+        400: Err('name / kind / base_url / options 不合法'),
+        409: Err('供应商名称已存在'),
+        500: Err('新建失败'),
+      },
+    },
+  },
+  '/config/providers/{id}': {
+    patch: {
+      tags: ['Config'],
+      operationId: 'updateConfigProvider',
+      summary: '改 base_url / enabled / options',
+      requestBody: { required: true, content: Json(Ref('ConfigProviderPatch')) },
+      responses: {
+        200: Ok('更新结果；写后已尝试热更新', WriteSchema('provider', Ref('ConfigProvider'))),
+        400: Err('base_url / enabled / options 不合法'),
+        404: Err('供应商不存在'),
+      },
+    },
+    delete: {
+      tags: ['Config'],
+      operationId: 'deleteConfigProvider',
+      summary: '硬删供应商，级联模型与默认行',
+      responses: {
+        200: Ok('删除结果；写后已尝试热更新', WriteSchema('deleted', { type: 'boolean' })),
+        404: Err('供应商不存在'),
+      },
+    },
+  },
+  '/config/providers/{id}/api-key': {
+    put: {
+      tags: ['Config'],
+      operationId: 'setConfigProviderApiKey',
+      summary: '设置 / 替换供应商 Key（AES-GCM 入库）',
+      requestBody: { required: true, content: Json(Ref('ConfigApiKey')) },
+      responses: {
+        200: Ok('更新结果；响应不回明文 Key', WriteSchema('provider', Ref('ConfigProvider'))),
+        400: Err('api_key 不合法'),
+        404: Err('供应商不存在'),
+        500: Err('加密或保存失败'),
+      },
+    },
+    delete: {
+      tags: ['Config'],
+      operationId: 'clearConfigProviderApiKey',
+      summary: '清除供应商 Key',
+      responses: {
+        200: Ok('更新结果', WriteSchema('provider', Ref('ConfigProvider'))),
+        404: Err('供应商不存在'),
+      },
+    },
+  },
+  '/config/providers/{id}/headers': {
+    put: {
+      tags: ['Config'],
+      operationId: 'setConfigProviderHeaders',
+      summary: '整组替换自定义 headers（加密）',
+      requestBody: { required: true, content: Json(Ref('ConfigHeaders')) },
+      responses: {
+        200: Ok('更新结果；只回字段名', WriteSchema('provider', Ref('ConfigProvider'))),
+        400: Err('headers 名称 / 值 / 大小不合法'),
+        404: Err('供应商不存在'),
+        500: Err('加密或保存失败'),
+      },
+    },
+  },
+  '/config/providers/{id}/query': {
+    put: {
+      tags: ['Config'],
+      operationId: 'setConfigProviderQuery',
+      summary: '整组替换自定义 query（明文）',
+      requestBody: { required: true, content: Json(Ref('ConfigQuery')) },
+      responses: {
+        200: Ok('更新结果', WriteSchema('provider', Ref('ConfigProvider'))),
+        400: Err('query 键值 / 大小不合法'),
+        404: Err('供应商不存在'),
+      },
+    },
+  },
+  '/config/providers/test': {
+    post: {
+      tags: ['Config'],
+      operationId: 'testConfigProviderDraft',
+      summary: '连接测试（草稿，不落库）',
+      requestBody: { required: true, content: Json(Ref('ConfigDraftProbe')) },
+      responses: {
+        200: Ok('测试结果', Ref('ConfigProbeResult')),
+        400: Err('kind / base_url / api_key / headers / query 不合法'),
+      },
+    },
+  },
+  '/config/providers/{id}/test': {
+    post: {
+      tags: ['Config'],
+      operationId: 'testConfigProvider',
+      summary: '连接测试（已存供应商）',
+      responses: {
+        200: Ok('测试结果', Ref('ConfigProbeResult')),
+        404: Err('供应商不存在'),
+        500: Err('Key / headers 解密失败'),
+      },
+    },
+  },
+  '/config/providers/{id}/discover': {
+    post: {
+      tags: ['Config'],
+      operationId: 'discoverConfigProviderModels',
+      summary: '拉上游模型清单（只读）',
+      responses: {
+        200: Ok('上游清单与 already_added 标记', Ref('ConfigDiscoverResult')),
+        404: Err('供应商不存在'),
+        500: Err('Key / headers 解密失败'),
+        502: Err('上游不可达 / 鉴权失败 / 清单形状不合法'),
+      },
+    },
+  },
+  '/config/providers/{id}/models/import': {
+    post: {
+      tags: ['Config'],
+      operationId: 'importConfigProviderModels',
+      summary: '导入用户勾选的模型',
+      requestBody: { required: true, content: Json(Ref('ConfigImportRequest')) },
+      responses: {
+        200: Ok('导入结果；写后已尝试热更新', Ref('ConfigImportResult')),
+        400: Err('model_id / kind / display_name / dimensions 不合法'),
+        404: Err('供应商不存在'),
+        500: Err('导入失败'),
+      },
+    },
+  },
+  '/config/models': {
+    get: {
+      tags: ['Config'],
+      operationId: 'listConfigModels',
+      summary: '全部真实模型行（不含默认行）',
+      responses: {
+        200: Ok('模型列表', {
+          type: 'object',
+          required: ['models'],
+          properties: { models: { type: 'array', items: Ref('ConfigModel') } },
+        }),
+        503: Err('运行时配置尚未装载'),
+      },
+    },
+    post: {
+      tags: ['Config'],
+      operationId: 'createConfigModel',
+      summary: '新建模型行',
+      requestBody: { required: true, content: Json(Ref('ConfigModelCreate')) },
+      responses: {
+        200: Ok('新建结果；写后已尝试热更新', WriteSchema('model', Ref('ConfigModel'))),
+        400: Err('provider / model / kind / dimensions 不合法'),
+        409: Err('模型已存在'),
+      },
+    },
+  },
+  '/config/models/{id}': {
+    patch: {
+      tags: ['Config'],
+      operationId: 'updateConfigModel',
+      summary: '改 display_name / dimensions / enabled',
+      requestBody: { required: true, content: Json(Ref('ConfigModelPatch')) },
+      responses: {
+        200: Ok('更新结果；写后已尝试热更新', WriteSchema('model', Ref('ConfigModel'))),
+        400: Err('display_name / dimensions / enabled 不合法'),
+        404: Err('模型不存在'),
+      },
+    },
+    delete: {
+      tags: ['Config'],
+      operationId: 'deleteConfigModel',
+      summary: '硬删模型，同事务删指向它的默认行',
+      responses: {
+        200: Ok('删除结果；写后已尝试热更新', WriteSchema('deleted', { type: 'boolean' })),
+        404: Err('模型不存在'),
+      },
+    },
+  },
+  '/config/defaults': {
+    get: {
+      tags: ['Config'],
+      operationId: 'listConfigDefaults',
+      summary: '默认对话 / 嵌入模型',
+      responses: {
+        200: Ok('默认行列表', {
+          type: 'object',
+          required: ['defaults'],
+          properties: { defaults: { type: 'array', items: Ref('ConfigDefault') } },
+        }),
+      },
+    },
+  },
+  '/config/defaults/{id}': {
+    put: {
+      tags: ['Config'],
+      operationId: 'setConfigDefault',
+      summary: '设置默认模型；id=default 或 embedding',
+      requestBody: { required: true, content: Json(Ref('ConfigDefaultPut')) },
+      responses: {
+        200: Ok('设置结果；写后已尝试热更新', WriteSchema('default', { type: ['object', 'null'], oneOf: [Ref('ConfigModel'), { type: 'null' }] })),
+        400: Err('provider / model_id / kind 不匹配'),
+      },
+    },
+    delete: {
+      tags: ['Config'],
+      operationId: 'deleteConfigDefault',
+      summary: '删除默认行',
+      responses: {
+        200: Ok('删除结果；写后已尝试热更新', WriteSchema('deleted', { type: 'boolean' })),
+        404: Err('默认行不存在'),
+      },
+    },
+  },
   '/health': {
     get: {
       tags: ['Health'],
@@ -713,6 +979,220 @@ const CustomPaths = {
 }
 
 const CustomSchemas = {
+  ConfigProvider: {
+    type: 'object',
+    required: ['id', 'name', 'kind', 'icon', 'base_url', 'has_api_key', 'key_status', 'has_headers', 'header_names', 'headers_status', 'query', 'options', 'enabled', 'available', 'unavailable_reason', 'model_count', 'created_at', 'updated_at'],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      kind: { type: 'string', enum: ['deepseek', 'dashscope', 'openai-compatible', 'ollama'] },
+      icon: { type: ['string', 'null'], maxLength: 32 },
+      base_url: { type: ['string', 'null'] },
+      has_api_key: { type: 'boolean' },
+      key_status: { type: 'string', enum: ['none', 'set', 'error'] },
+      has_headers: { type: 'boolean' },
+      header_names: { type: 'array', items: { type: 'string' } },
+      headers_status: { type: 'string', enum: ['none', 'set', 'error'] },
+      query: { type: 'object', additionalProperties: { type: 'string' } },
+      options: { type: 'object', additionalProperties: true },
+      enabled: { type: 'boolean' },
+      available: { type: 'boolean' },
+      unavailable_reason: { type: ['string', 'null'] },
+      model_count: { type: 'integer' },
+      created_at: { type: 'string', format: 'date-time' },
+      updated_at: { type: 'string', format: 'date-time' },
+    },
+  },
+  ConfigModel: {
+    type: 'object',
+    required: ['id', 'provider_id', 'provider_name', 'provider_kind', 'model_id', 'kind', 'display_name', 'dimensions', 'enabled', 'available', 'unavailable_reason'],
+    properties: {
+      id: { type: 'string' },
+      provider_id: { type: 'string', format: 'uuid' },
+      provider_name: { type: 'string' },
+      provider_kind: { type: 'string' },
+      model_id: { type: 'string' },
+      kind: { type: 'string', enum: ['language', 'embedding'] },
+      display_name: { type: 'string' },
+      dimensions: { type: ['integer', 'null'] },
+      enabled: { type: 'boolean' },
+      available: { type: 'boolean' },
+      unavailable_reason: { type: ['string', 'null'] },
+    },
+  },
+  ConfigDefault: {
+    type: 'object',
+    required: ['id', 'provider', 'model_id', 'key', 'kind', 'dimensions', 'available', 'unavailable_reason', 'updated_at'],
+    properties: {
+      id: { type: 'string', enum: ['default', 'embedding'] },
+      provider: { type: 'string' },
+      model_id: { type: 'string' },
+      key: { type: 'string' },
+      kind: { type: 'string', enum: ['language', 'embedding'] },
+      dimensions: { type: ['integer', 'null'] },
+      available: { type: 'boolean' },
+      unavailable_reason: { type: ['string', 'null'] },
+      updated_at: { type: 'string', format: 'date-time' },
+    },
+  },
+  ConfigStatus: {
+    type: 'object',
+    required: ['loaded_at', 'provider_count', 'model_count', 'default_chat_available', 'default_embedding_available', 'last_reload'],
+    properties: {
+      loaded_at: { type: 'string', format: 'date-time' },
+      provider_count: { type: 'integer' },
+      model_count: { type: 'integer' },
+      default_chat_available: { type: 'boolean' },
+      default_embedding_available: { type: 'boolean' },
+      last_reload: {
+        type: ['object', 'null'],
+        properties: {
+          ok: { type: 'boolean' },
+          at: { type: 'string', format: 'date-time' },
+          error_code: { type: ['string', 'null'] },
+        },
+      },
+    },
+  },
+  ConfigProviderCreate: {
+    type: 'object',
+    required: ['name', 'kind'],
+    properties: {
+      name: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,31}$' },
+      kind: { type: 'string', enum: ['deepseek', 'dashscope', 'openai-compatible', 'ollama'] },
+      icon: { type: ['string', 'null'], maxLength: 32 },
+      base_url: { type: ['string', 'null'] },
+      options: { type: 'object', additionalProperties: true },
+    },
+  },
+  ConfigProviderPatch: {
+    type: 'object',
+    properties: {
+      base_url: { type: ['string', 'null'] },
+      enabled: { type: 'boolean' },
+      options: { type: 'object', additionalProperties: true },
+      icon: { type: ['string', 'null'], maxLength: 32 },
+    },
+  },
+  ConfigApiKey: {
+    type: 'object',
+    required: ['api_key'],
+    properties: { api_key: { type: 'string', minLength: 1, maxLength: 4096 } },
+  },
+  ConfigHeaders: {
+    type: 'object',
+    required: ['headers'],
+    properties: { headers: { type: 'object', additionalProperties: { type: 'string' } } },
+  },
+  ConfigQuery: {
+    type: 'object',
+    required: ['query'],
+    properties: { query: { type: 'object', additionalProperties: { type: 'string' } } },
+  },
+  ConfigDraftProbe: {
+    type: 'object',
+    required: ['kind'],
+    properties: {
+      kind: { type: 'string', enum: ['deepseek', 'dashscope', 'openai-compatible', 'ollama'] },
+      base_url: { type: ['string', 'null'] },
+      api_key: { type: 'string' },
+      headers: { type: 'object', additionalProperties: { type: 'string' } },
+      query: { type: 'object', additionalProperties: { type: 'string' } },
+    },
+  },
+  ConfigProbeResult: {
+    type: 'object',
+    required: ['ok', 'latency_ms'],
+    properties: {
+      ok: { type: 'boolean' },
+      status: { type: 'integer' },
+      latency_ms: { type: 'integer' },
+      model_count: { type: 'integer' },
+      message: { type: 'string' },
+    },
+  },
+  ConfigDiscoveredModel: {
+    type: 'object',
+    required: ['model_id', 'owned_by', 'created', 'already_added', 'already_kind'],
+    properties: {
+      model_id: { type: 'string' },
+      owned_by: { type: ['string', 'null'] },
+      created: { type: ['integer', 'null'] },
+      already_added: { type: 'boolean' },
+      already_kind: { type: ['string', 'null'], enum: ['language', 'embedding', null] },
+    },
+  },
+  ConfigDiscoverResult: {
+    type: 'object',
+    required: ['fetched_at', 'source', 'models'],
+    properties: {
+      fetched_at: { type: 'string', format: 'date-time' },
+      source: { type: 'string', enum: ['openai-models', 'ollama-tags'] },
+      models: { type: 'array', items: Ref('ConfigDiscoveredModel') },
+    },
+  },
+  ConfigModelCreate: {
+    type: 'object',
+    required: ['provider_id', 'model_id', 'kind', 'display_name'],
+    properties: {
+      provider_id: { type: 'string', format: 'uuid' },
+      model_id: { type: 'string' },
+      kind: { type: 'string', enum: ['language', 'embedding'] },
+      display_name: { type: 'string', maxLength: 80 },
+      dimensions: { type: ['integer', 'null'], minimum: 1, maximum: 16000 },
+    },
+  },
+  ConfigModelPatch: {
+    type: 'object',
+    properties: {
+      display_name: { type: 'string', maxLength: 80 },
+      enabled: { type: 'boolean' },
+      dimensions: { type: ['integer', 'null'], minimum: 1, maximum: 16000 },
+    },
+  },
+  ConfigDefaultPut: {
+    type: 'object',
+    required: ['provider', 'model_id'],
+    properties: { provider: { type: 'string' }, model_id: { type: 'string' } },
+  },
+  ConfigImportRequest: {
+    type: 'object',
+    required: ['models'],
+    properties: {
+      models: {
+        type: 'array',
+        minItems: 1,
+        items: {
+          type: 'object',
+          required: ['model_id', 'kind'],
+          properties: {
+            model_id: { type: 'string' },
+            kind: { type: 'string', enum: ['language', 'embedding'] },
+            display_name: { type: 'string' },
+            dimensions: { type: 'integer', minimum: 1, maximum: 16000 },
+          },
+        },
+      },
+    },
+  },
+  ConfigImportResult: {
+    type: 'object',
+    required: ['added', 'skipped', 'reload_ok'],
+    properties: {
+      added: { type: 'array', items: { type: 'object', additionalProperties: true } },
+      skipped: { type: 'array', items: { type: 'object', additionalProperties: true } },
+      reload_ok: { type: 'boolean' },
+      reload_error: { type: 'string' },
+    },
+  },
+  ConfigWriteMeta: {
+    type: 'object',
+    required: ['reload_ok'],
+    properties: {
+      reload_ok: { type: 'boolean' },
+      reload_error: { type: 'string' },
+    },
+  },
   Trace: {
     type: 'object',
     required: ['id', 'route', 'started_at', 'status', 'created_at'],

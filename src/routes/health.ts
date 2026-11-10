@@ -8,13 +8,12 @@
  */
 
 import { Hono } from 'hono'
-import { modelIdOf } from '../adapter/model/key'
 import { ollamaHealthCheck, ollamaModelList, ollamaStatusList } from '../adapter/contract'
 
 export { createHealthRoute, createHealthServices }
 export type { EvalProbe, HealthCheck, HealthService, ProbeResult }
 
-import type { AppConfig } from '../config'
+import type { RuntimeModelRegistry } from '../adapter/model/runtime-registry'
 import type { ObjectStore, Repo } from '../adapter/contract'
 import { json, map } from 'zod';
 
@@ -49,9 +48,10 @@ interface CachedResponse {
   body: { status: 'ok' | 'degraded'; services: Record<string, ServiceResult> }
 }
 
-function createHealthServices(Config: AppConfig, Repo: Repo, Store: ObjectStore, Eval: EvalProbe): HealthService[] {
-  const base = Config.ollamaBaseUrl
-  const emb = modelIdOf(Config.embeddingModel)
+function createHealthServices(Runtime: RuntimeModelRegistry, Repo: Repo, Store: ObjectStore, Eval: EvalProbe): HealthService[] {
+  const Target = ollamaProbeTarget(Runtime)
+  const base = Target?.base ?? ''
+  const emb = Target?.modelId ?? ''
 
   return [
     {
@@ -84,6 +84,7 @@ function createHealthServices(Config: AppConfig, Repo: Repo, Store: ObjectStore,
         {
           name: 'version',
           ping: async () => {
+            if (Target === null) return { ok: true, detail: ['no ollama provider'] }
             const rep = await ollamaHealthCheck(base)
             return {
               ok: await (rep !== 'error'),
@@ -94,6 +95,7 @@ function createHealthServices(Config: AppConfig, Repo: Repo, Store: ObjectStore,
         {
           name: 'models',
           ping: async () => {
+            if (Target === null) return { ok: true, detail: ['no ollama provider'] }
             const models = await ollamaModelList(base)
             return {
               ok: models.some((m) => m.name === emb || m.name.startsWith(`${emb}:`)),
@@ -104,6 +106,7 @@ function createHealthServices(Config: AppConfig, Repo: Repo, Store: ObjectStore,
         {
           name: 'running',
           ping: async () => {
+            if (Target === null) return { ok: true, detail: ['no ollama provider'] }
             const ps = await ollamaStatusList(base)
             return {
               ok: true,
@@ -126,6 +129,23 @@ function createHealthServices(Config: AppConfig, Repo: Repo, Store: ObjectStore,
       ],
     },
   ]
+}
+
+function ollamaProbeTarget(Runtime: RuntimeModelRegistry): { base: string; modelId: string } | null {
+  const Config = Runtime.current().config
+  for (const Key of [Config.defaults.embedding, Config.defaults.language]) {
+    if (Key === null) continue
+    const Model = Config.models.find((Item) => Item.key === Key && Item.available)
+    if (Model === undefined) continue
+    const Provider = Config.providers.find((Item) => Item.name === Model.provider_name && Item.available)
+    if (Provider === undefined || Provider.base_url === null) continue
+    if (Provider.kind !== 'ollama' && Provider.kind !== 'openai-compatible') continue
+    return {
+      base: Provider.base_url.replace(/\/v1\/?$/, '').replace(/\/+$/, ''),
+      modelId: Model.model_id,
+    }
+  }
+  return null
 }
 
 function createHealthRoute(Services: HealthService[], CacheTtlMs = 5000): Hono {

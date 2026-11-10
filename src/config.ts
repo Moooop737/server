@@ -22,10 +22,6 @@ class AppConfig {
   readonly port: number
   readonly databaseUrl: string
   readonly evalDatabaseUrl: string | null
-  readonly ollamaBaseUrl: string
-  readonly embeddingModel: string
-  readonly embeddingDimensions: number
-  readonly chatModel: string
   readonly retrievalVectorTopK: number
   readonly retrievalLexicalTopK: number
   readonly retrievalMinSimilarity: number   // 余弦相似度下限
@@ -41,10 +37,7 @@ class AppConfig {
 
   constructor() {
     const missing: string[] = []
-    const embeddingModel = getEnv('EMBEDDING_MODEL', missing)
-    const chatModel = getEnv('CHAT_MODEL', missing)
     const databaseUrl = getEnv('DATABASE_URL', missing)
-    const ollamaBaseUrl = getEnv('OLLAMA_BASE_URL', missing)
     const s3EndpointRaw = getEnv('S3_ENDPOINT', missing)
     const s3Bucket = getEnv('S3_BUCKET', missing)
     const s3AccessKeyId = getEnv('S3_ACCESS_KEY_ID', missing)
@@ -53,18 +46,10 @@ class AppConfig {
     if (missing.length > 0) {
       fail('E_CONFIG_MISSING', `必需的环境变量缺失: ${missing.join(', ')}`)
     }
-    this.embeddingModel = embeddingModel!
-    this.chatModel = chatModel!
-    this.embeddingDimensions = numOrThrow(getEnv('EMBEDDING_DIMENSIONS'), 'EMBEDDING_DIMENSIONS', 1024, 1, 16000)
-    if (![2048, 1024, 512].includes(this.embeddingDimensions)) {
-      logWarn('W_EMBEDDING_DIM', `EMBEDDING_DIMENSIONS=${this.embeddingDimensions} 无对应 HNSW 索引，检索将退化顺序扫描`)
-    }
-
     this.port = numOrThrow(getEnv('PORT'), 'PORT', 3000, 1, 65535)
     this.configSecretKey = getEnv('CONFIG_SECRET_KEY')
     this.databaseUrl = databaseUrl!
     this.evalDatabaseUrl = parseEvalDatabaseUrl(getEnv('EVAL_DATABASE_URL'), this.databaseUrl)
-    this.ollamaBaseUrl = ollamaBaseUrl!
 
     this.retrievalVectorTopK = numOrThrow(getEnv('RETRIEVAL_VECTOR_TOPK'), 'RETRIEVAL_VECTOR_TOPK', 10, 1, 100)
     this.retrievalLexicalTopK = numOrThrow(getEnv('RETRIEVAL_LEXICAL_TOPK'), 'RETRIEVAL_LEXICAL_TOPK', 10, 1, 100)
@@ -81,7 +66,7 @@ class AppConfig {
   }
 }
 
-async function cleanUpOnBoot(repo: Repo, codebases: CodebaseRepo, config: AppConfig) {
+async function cleanUpOnBoot(repo: Repo, codebases: CodebaseRepo, EmbeddingDimensions: number | null) {
   try {
     const cleaned = await repo.markStaleOnBoot()
     if (cleaned.resources > 0 || cleaned.uploads > 0) {
@@ -102,7 +87,7 @@ async function cleanUpOnBoot(repo: Repo, codebases: CodebaseRepo, config: AppCon
 
   try {
     const stored = await repo.dimensionsInStore()
-    logInfo('I_VECTOR_DIMENSIONS', `库中向量维度=${stored.join(',') || '空'} 检索维度=${config.embeddingDimensions}`)
+    logInfo('I_VECTOR_DIMENSIONS', `库中向量维度=${stored.join(',') || '空'} 检索维度=${EmbeddingDimensions ?? '未配置'}`)
   } catch (err) {
     logError('E_DIMENSION_PROBE', String(err))
   }

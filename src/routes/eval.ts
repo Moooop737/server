@@ -34,7 +34,7 @@ const METRIC_CONFIG_KEYS: readonly string[] = ['judge_model', 'rubric', 'metrics
 @injectable()
 class EvalRoute {
   private readonly assembly: EvalAssembly
-  private readonly models: Set<string>
+  private readonly chat: ChatHandle
   private readonly runner: EvalRunner
 
   constructor(
@@ -43,7 +43,7 @@ class EvalRoute {
     @inject(EvalRunner) Runner: EvalRunner,
   ) {
     this.assembly = Assembly
-    this.models = new Set(Chat.catalog().map((Item) => Item.id))
+    this.chat = Chat
     this.runner = Runner
   }
 
@@ -51,7 +51,7 @@ class EvalRoute {
     const app = new Hono()
     const repo = this.assembly.repo
     const mode = this.assembly.mode
-    const models = this.models
+    const models = () => new Set(this.chat.catalog().map((Item) => Item.id))
 
     app.get('/status', async (c) => {
       const reachable = await repo.ping()
@@ -243,7 +243,7 @@ function buildCases(app: Hono, repo: Repo): Hono {
   return app
 }
 
-function buildConfigs(app: Hono, repo: Repo, models: Set<string>): Hono {
+function buildConfigs(app: Hono, repo: Repo, models: () => Set<string>): Hono {
   app.get('/configs', async (c) => {
     const Kind = c.req.query('kind')
     if (Kind !== 'run' && Kind !== 'metric') return bad(c, 'E_EVAL_KIND', 'kind 需为 run 或 metric')
@@ -262,7 +262,7 @@ function buildConfigs(app: Hono, repo: Repo, models: Set<string>): Hono {
     if (Kind !== 'run' && Kind !== 'metric') return bad(c, 'E_EVAL_KIND', 'kind 需为 run 或 metric')
     const Name = nonEmptyString(Body.name)
     if (Name === null) return bad(c, 'E_EVAL_NAME', 'name 必填且为非空字符串')
-    const Parsed = parseConfig(Kind, Body.config, models)
+    const Parsed = parseConfig(Kind, Body.config, models())
     if (!Parsed.ok) return bad(c, 'E_EVAL_CONFIG', Parsed.message)
     try {
       const Config = await repo.createConfig({ kind: Kind, name: Name, config: Parsed.config })
@@ -284,7 +284,7 @@ function buildConfigs(app: Hono, repo: Repo, models: Set<string>): Hono {
     if (Name === null) return bad(c, 'E_EVAL_NAME', 'name 必填且为非空字符串')
     let Config = Existing.config
     if (Body.config !== undefined) {
-      const Parsed = parseConfig(Existing.kind, Body.config, models)
+      const Parsed = parseConfig(Existing.kind, Body.config, models())
       if (!Parsed.ok) return bad(c, 'E_EVAL_CONFIG', Parsed.message)
       Config = Parsed.config
     }

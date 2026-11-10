@@ -1,7 +1,7 @@
 /**
  * 检索工厂 —— RetrieverFactory.assemble(Recipe) 把策略名兑换成实例，产出一个数据无关的可执行 Retriever。
  * embed 用的句柄与截维都在 Deps.embedding 里（装配层从 model 清单选定的那一行），本层不再自己兑换 embedder；
- * 它与检索旋钮 config.embeddingDimensions 是同一个 env 位（都读 EMBEDDING_DIMENSIONS），所以这里不再设恒等自检。
+ * 维度来自当前嵌入快照（Deps.embedding.dimensions），不再读 env；同一请求内先取一次，避免热更新在中途换值。
  * 维度判定只剩 search 期一处，且**每请求现查一次** repo.dimensionsInStore()，不在启动时缓存。
  * search 的次序：掐空问句 → dimension_check → embed_query → vector_recall →（有 lexical 装配位才跑）bm25_recall → rrf_fusion。
  * 每个实际执行的 stage 交给 caller 传入的 StageSink，顺序与形状集中在下面；factory 不替调用方选落点：
@@ -57,17 +57,22 @@ class RetrieverFactory {
       if (!trimmed) throw new RetrieverError('E_EMPTY_QUERY', '提问不能为空')
       const Sink = Options?.sink ?? NoopStageSink
 
+      const Embedding = {
+        model: Deps.embedding.model,
+        modelId: Deps.embedding.modelId,
+        dimensions: Deps.embedding.dimensions,
+      }
       const stored = await Deps.repo.dimensionsInStore()
-      const foreign = stored.filter((Dim) => Dim !== Deps.config.embeddingDimensions)
+      const foreign = stored.filter((Dim) => Dim !== Embedding.dimensions)
       await runStage(
         Sink,
         'dimension_check',
-        { expected_dimension: Deps.config.embeddingDimensions, stored_dimensions: stored },
+        { expected_dimension: Embedding.dimensions, stored_dimensions: stored },
         async () => {
           if (foreign.length > 0) {
             throw new RetrieverError(
               'E_DIMENSION_MISMATCH',
-              `库中存在 ${foreign.join('/')} 维向量，与当前检索维度 ${Deps.config.embeddingDimensions} 不符，拒绝作答`,
+              `库中存在 ${foreign.join('/')} 维向量，与当前检索维度 ${Embedding.dimensions} 不符，拒绝作答`,
             )
           }
           return { foreign_dimensions: [] as number[] }
@@ -78,12 +83,12 @@ class RetrieverFactory {
       const queryVector = await runStage(
         Sink,
         'embed_query',
-        { query: trimmed, model_id: Deps.embedding.modelId, dimensions: Deps.embedding.dimensions },
+        { query: trimmed, model_id: Embedding.modelId, dimensions: Embedding.dimensions },
         async () => {
           const { embeddings } = await embedMany({
-            model: Deps.embedding.model,
+            model: Embedding.model,
             values: [trimmed],
-            dimensions: Deps.embedding.dimensions,
+            dimensions: Embedding.dimensions,
             ...(Sink.embedTelemetry === 'off' ? { telemetry: { isEnabled: false } } : {}),
           })
           const First = embeddings[0]

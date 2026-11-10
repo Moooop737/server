@@ -4,7 +4,7 @@
  * 不要手改。
  */
 
-import { pgTable, check, uuid, text, jsonb, timestamp, uniqueIndex, bigint, foreignKey, unique, integer, boolean, pgEnum } from "drizzle-orm/pg-core"
+import { pgTable, check, uuid, text, jsonb, timestamp, uniqueIndex, bigint, unique, boolean, foreignKey, integer, pgEnum } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
 export const resource_status = pgEnum("resource_status", ['uploading', 'uploaded', 'processing', 'ready', 'upload_failed', 'process_failed'])
@@ -42,6 +42,29 @@ export const resources = pgTable("resources", {
 	uniqueIndex("resources_storage_uri_uidx").using("btree", table.data_uri.asc().nullsLast().op("text_ops")).where(sql`(data_uri ~~ 'kc://%'::text)`),
 	check("resources_storage_size_nonnegative", sql`(storage_size_bytes IS NULL) OR (storage_size_bytes >= 0)`),
 	check("resources_content_hash_sha256", sql`(content_hash IS NULL) OR (content_hash ~ '^[0-9a-f]{64}$'::text)`),
+]);
+
+export const providers = pgTable("providers", {
+	id: uuid().defaultRandom().primaryKey().notNull(),
+	name: text().notNull(),
+	kind: text().notNull(),
+	base_url: text(),
+	api_key_ciphertext: text(),
+	headers_ciphertext: text(),
+	query: jsonb().default({}).notNull(),
+	enabled: boolean().default(true).notNull(),
+	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	options: jsonb().default({}).notNull(),
+	icon: text(),
+}, (table) => [
+	unique("providers_name_key").on(table.name),
+	check("providers_name_format", sql`name ~ '^[a-z0-9][a-z0-9_-]{0,31}$'::text`),
+	check("providers_query_object", sql`jsonb_typeof(query) = 'object'::text`),
+	check("providers_options_object", sql`jsonb_typeof(options) = 'object'::text`),
+	check("providers_kind_check", sql`kind = ANY (ARRAY['deepseek'::text, 'dashscope'::text, 'openai-compatible'::text, 'ollama'::text])`),
+	check("providers_base_url_check", sql`((kind = ANY (ARRAY['deepseek'::text, 'dashscope'::text])) AND (base_url IS NULL)) OR ((kind = ANY (ARRAY['openai-compatible'::text, 'ollama'::text])) AND (base_url IS NOT NULL))`),
+	check("providers_icon_length", sql`(icon IS NULL) OR ((btrim(icon) <> ''::text) AND (char_length(icon) <= 32))`),
 ]);
 
 export const models = pgTable("models", {
@@ -140,27 +163,6 @@ export const sessions = pgTable("sessions", {
 	group_name: text(),
 	model: text(),
 });
-
-export const providers = pgTable("providers", {
-	id: uuid().defaultRandom().primaryKey().notNull(),
-	name: text().notNull(),
-	kind: text().notNull(),
-	base_url: text(),
-	api_key_ciphertext: text(),
-	headers_ciphertext: text(),
-	query: jsonb().default({}).notNull(),
-	enabled: boolean().default(true).notNull(),
-	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
-	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
-	options: jsonb().default({}).notNull(),
-}, (table) => [
-	unique("providers_name_key").on(table.name),
-	check("providers_name_format", sql`name ~ '^[a-z0-9][a-z0-9_-]{0,31}$'::text`),
-	check("providers_query_object", sql`jsonb_typeof(query) = 'object'::text`),
-	check("providers_options_object", sql`jsonb_typeof(options) = 'object'::text`),
-	check("providers_kind_check", sql`kind = ANY (ARRAY['deepseek'::text, 'dashscope'::text, 'openai-compatible'::text, 'ollama'::text])`),
-	check("providers_base_url_check", sql`((kind = ANY (ARRAY['deepseek'::text, 'dashscope'::text])) AND (base_url IS NULL)) OR ((kind = ANY (ARRAY['openai-compatible'::text, 'ollama'::text])) AND (base_url IS NOT NULL))`),
-]);
 
 export const codebases = pgTable("codebases", {
 	id: uuid().defaultRandom().primaryKey().notNull(),

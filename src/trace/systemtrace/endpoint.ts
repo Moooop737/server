@@ -163,6 +163,8 @@ async function buildPayloads(
 function capturePlan(Method: string, Route: string): CapturePlan | null {
   const Key = `${Method} ${Route}`
   if (NO_PAYLOADS.has(Key)) return null
+  /* 配置写接口可能带 Key / headers，整段 /config 不记 payload；端点行仍写。 */
+  if (Route.startsWith('/config')) return null
   const SuccessMode = SUCCESS_REQUEST[Key]
   return SuccessMode === undefined
     ? { requestBody: 'full', onSuccess: false }

@@ -7,6 +7,7 @@ export { ChatWorker }
 
 import { createUIMessageStreamResponse, toUIMessageStream } from 'ai'
 import { ChatHandle, PostgresRepo, RetrieverHandle } from '../../adapter/contract'
+import { RuntimeRegistryError } from '../../adapter/model/runtime-registry'
 import { inject, singleton } from 'tsyringe'
 import { Chat } from '../chat/chat'
 import { weaveAgentTools } from '../tool/weave'
@@ -29,7 +30,7 @@ const STEP_LIMIT = 5
 class ChatWorker {
   private readonly repo: Repo
   private readonly history: SessionHistory
-  private readonly model: LanguageModelV4
+  private readonly handle: ChatHandle
   private readonly retriever: Retriever
   private readonly chat = new Chat()
 
@@ -40,7 +41,7 @@ class ChatWorker {
     @inject(SessionHistory) History: SessionHistory) {
     this.repo = Repo
     this.history = History
-    this.model = Handle.model
+    this.handle = Handle
     this.retriever = R.retriever
   }
 
@@ -64,12 +65,16 @@ class ChatWorker {
     try {
       const { uiMessages, modelMessages } = await this.history.loadSessionContext(Query, SessionId, HISTORY_MESSAGES, TraceId)
       let Failure: ChatFailure | null = null
+      const Chosen = Model ?? this.handle.defaultModel()
+      if (Chosen === null) {
+        throw new RuntimeRegistryError('E_NO_CHAT_MODEL', '未配置可用的默认对话模型')
+      }
       const { instructions, tools } = weaveAgentTools([
         retrieve(this.retriever),
         resource(this.repo),
       ], GLOBAL_INSTRUCTIONS)
       const Result = this.chat.stream(modelMessages, {
-        model: Model ?? this.model,
+        model: Chosen,
         instructions,
         tools,
         stepLimit: STEP_LIMIT,

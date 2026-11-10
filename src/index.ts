@@ -13,6 +13,7 @@ import { CodebasesRoute } from './routes/codebases'
 import { RetrieveRoute } from './routes/retrieve'
 import { ChatRoute } from './routes/chat'
 import { ModelsRoute } from './routes/models'
+import { ConfigRoute } from './routes/config'
 import { EvalRoute } from './routes/eval'
 import { EvalAssembly } from './eval/assembly'
 import { SessionsRoute } from './routes/sessions'
@@ -21,6 +22,7 @@ import { TracesRoute } from './routes/traces'
 import { createCrudRoot, registerAllCrud } from './routes/crud'
 import { createDocRoute } from './routes/doc'
 import { ObjectStoreHandle, PostgresCodebaseRepo, PostgresRepo } from './adapter/contract'
+import { RuntimeModelRegistry } from './adapter/model/runtime-registry'
 import { AppConfig, cleanUpOnBoot } from './config'
 import { serve } from '@hono/node-server'
 import { createEndpointTrace } from './trace/systemtrace/endpoint'
@@ -33,6 +35,16 @@ void (async () => {
   const repo = container.resolve(PostgresRepo)
   const config = container.resolve(AppConfig)
   const store = container.resolve(ObjectStoreHandle)
+  const Runtime = container.resolve(RuntimeModelRegistry)
+
+  try {
+    await Runtime.load()
+    logInfo('I_CONFIG_LOADED', '运行时配置已装载')
+  } catch (err) {
+    logError('E_CONFIG_LOAD', err instanceof Error ? (err.stack ?? err.message) : String(err))
+    process.exit(1)
+  }
+
   const { app, router } = await createCrudRoot();
 
   try {
@@ -49,10 +61,11 @@ void (async () => {
     app.route('/traces', container.resolve(TracesRoute).build())
     app.route('/sessions', container.resolve(SessionsRoute).build())
     app.route('/observability', container.resolve(ObservabilityRoute).build())
-    app.route('/health', createHealthRoute(createHealthServices(config, repo, store, { mode: Eval.mode, ping: () => Eval.repo.ping() })))
+    app.route('/health', createHealthRoute(createHealthServices(Runtime, repo, store, { mode: Eval.mode, ping: () => Eval.repo.ping() })))
     app.route('/retrieve', container.resolve(RetrieveRoute).build())
     app.route('/chat', container.resolve(ChatRoute).build())
     app.route('/models', container.resolve(ModelsRoute).build())
+    app.route('/config', container.resolve(ConfigRoute).build())
     await registerAllCrud(app)
     app.route('/doc', createDocRoute(router, `http://${config.host}:${config.port}`))
 
@@ -61,7 +74,7 @@ void (async () => {
     process.exit(1)
   }
 
-  await cleanUpOnBoot(repo, container.resolve(PostgresCodebaseRepo), config)
+  await cleanUpOnBoot(repo, container.resolve(PostgresCodebaseRepo), Runtime.embeddingDefault()?.dimensions ?? null)
   try {
     const Cleaned = await container.resolve(EvalAssembly).repo.markInterruptedRuns()
     if (Cleaned > 0) logInfo('I_EVAL_RUN_CLEANUP', `中断的评测运行已标 cancelled：${Cleaned}`)

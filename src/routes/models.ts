@@ -10,26 +10,21 @@ import 'reflect-metadata'
 import { Hono } from 'hono'
 import { inject, injectable } from 'tsyringe'
 import { ChatHandle } from '../adapter/contract'
-import { AppConfig } from '../config'
 
 export { ModelsRoute }
 
 @injectable()
 class ModelsRoute {
   private readonly handle: ChatHandle
-  private readonly config: AppConfig
 
-  constructor(
-    @inject(ChatHandle) Handle: ChatHandle,
-    @inject(AppConfig) Config: AppConfig) {
+  constructor(@inject(ChatHandle) Handle: ChatHandle) {
     this.handle = Handle
-    this.config = Config
   }
 
   build(): Hono {
     const app = new Hono()
 
-    app.get('/', (c) => c.json({ default: this.config.chatModel, models: this.handle.catalog() }))
+    app.get('/', (c) => c.json({ default: this.handle.defaultKey(), models: this.handle.catalog() }))
 
     return app
   }

@@ -67,7 +67,10 @@ class ChatRoute {
         }
         const Model = Requested ?? (Session.model === null ? undefined : this.handle.resolve(Session.model))
         if (Requested === undefined && Session.model !== null && Model === undefined) {
-          logWarn('W_SESSION_MODEL', `会话 ${Session.id} 记录的模型 ${Session.model} 不在册，本轮回落 CHAT_MODEL`)
+          logWarn('W_SESSION_MODEL', `会话 ${Session.id} 记录的模型 ${Session.model} 不在册，本轮回落默认模型`)
+        }
+        if (Model === undefined && this.handle.defaultModel() === null) {
+          return c.json({ code: 'E_NO_CHAT_MODEL', message: '未配置可用的默认对话模型' }, 409)
         }
         return await this.chat.ask(query, body.sessionId, c.req.raw.signal, Model)
       } catch (err) {

@@ -7,8 +7,9 @@
  */
 
 export {
+  PostgresConfigRepo,
   listProviders, getProvider, getProviderByName, createProvider,
-  setProviderBaseUrl, setProviderEnabled, setProviderApiKey, setProviderHeaders, setProviderQuery, setProviderOptions, deleteProvider,
+  setProviderBaseUrl, setProviderEnabled, setProviderIcon, setProviderApiKey, setProviderHeaders, setProviderQuery, setProviderOptions, deleteProvider,
   listModels, getModel, createModel, updateModel, deleteModel,
   listDefaults, getDefault, upsertDefault, deleteDefault, readConfig,
 }
@@ -17,8 +18,12 @@ export type {
   ConfigSnapshot, CreateProviderInput, CreateModelInput, UpdateModelInput,
 }
 
+import 'reflect-metadata'
+import { inject, singleton } from 'tsyringe'
 import { and, asc, eq, ne } from 'drizzle-orm'
 import { models, providers } from './orm/schema'
+import { createOrm } from './orm/client'
+import { DbHandle } from '../connection/db'
 import type { Orm } from './orm/client'
 
 type ProviderKind = 'deepseek' | 'dashscope' | 'openai-compatible' | 'ollama'
@@ -28,6 +33,7 @@ interface ProviderRow {
   id: string
   name: string
   kind: ProviderKind
+  icon: string | null
   base_url: string | null
   api_key_ciphertext: string | null
   headers_ciphertext: string | null
@@ -73,6 +79,7 @@ interface ConfigSnapshot {
 interface CreateProviderInput {
   name: string
   kind: ProviderKind
+  icon?: string | null
   base_url: string | null
   options?: Record<string, unknown>
 }
@@ -142,6 +149,7 @@ function rowToProvider(Row: any): ProviderRow {
     id: Row.id,
     name: Row.name,
     kind: Row.kind as ProviderKind,
+    icon: Row.icon ?? null,
     base_url: Row.base_url ?? null,
     api_key_ciphertext: Row.api_key_ciphertext ?? null,
     headers_ciphertext: Row.headers_ciphertext ?? null,
@@ -210,6 +218,7 @@ async function createProvider(Db: Orm, Input: CreateProviderInput): Promise<Prov
   const Rows = await Db.insert(providers).values({
     name: Input.name,
     kind: Input.kind,
+    icon: Input.icon ?? null,
     base_url: Input.base_url,
     options: Input.options ?? {},
   }).returning()
@@ -227,6 +236,14 @@ async function setProviderBaseUrl(Db: Orm, Id: string, BaseUrl: string | null): 
 async function setProviderEnabled(Db: Orm, Id: string, Enabled: boolean): Promise<boolean> {
   const Rows = await Db.update(providers)
     .set({ enabled: Enabled, updated_at: new Date() })
+    .where(eq(providers.id, Id))
+    .returning({ id: providers.id })
+  return Rows.length > 0
+}
+
+async function setProviderIcon(Db: Orm, Id: string, Icon: string | null): Promise<boolean> {
+  const Rows = await Db.update(providers)
+    .set({ icon: Icon, updated_at: new Date() })
     .where(eq(providers.id, Id))
     .returning({ id: providers.id })
   return Rows.length > 0
@@ -408,4 +425,38 @@ async function readConfig(Db: Orm): Promise<ConfigSnapshot> {
       defaults: DefaultRows.map(rowToDefault),
     }
   }, { isolationLevel: 'repeatable read' })
+}
+
+@singleton()
+class PostgresConfigRepo {
+  private readonly orm: Orm
+
+  constructor(@inject(DbHandle) Db: DbHandle) {
+    this.orm = createOrm(Db.pool)
+  }
+
+  readConfig() { return readConfig(this.orm) }
+  listProviders() { return listProviders(this.orm) }
+  getProvider(Id: string) { return getProvider(this.orm, Id) }
+  getProviderByName(Name: string) { return getProviderByName(this.orm, Name) }
+  createProvider(Input: CreateProviderInput) { return createProvider(this.orm, Input) }
+  setProviderBaseUrl(Id: string, BaseUrl: string | null) { return setProviderBaseUrl(this.orm, Id, BaseUrl) }
+  setProviderEnabled(Id: string, Enabled: boolean) { return setProviderEnabled(this.orm, Id, Enabled) }
+  setProviderIcon(Id: string, Icon: string | null) { return setProviderIcon(this.orm, Id, Icon) }
+  setProviderApiKey(Id: string, Ciphertext: string | null) { return setProviderApiKey(this.orm, Id, Ciphertext) }
+  setProviderHeaders(Id: string, Ciphertext: string | null) { return setProviderHeaders(this.orm, Id, Ciphertext) }
+  setProviderQuery(Id: string, Query: Record<string, string>) { return setProviderQuery(this.orm, Id, Query) }
+  setProviderOptions(Id: string, Options: Record<string, unknown>) { return setProviderOptions(this.orm, Id, Options) }
+  deleteProvider(Id: string) { return deleteProvider(this.orm, Id) }
+  listModels() { return listModels(this.orm) }
+  getModel(Id: string) { return getModel(this.orm, Id) }
+  createModel(Input: CreateModelInput) { return createModel(this.orm, Input) }
+  updateModel(Id: string, Input: UpdateModelInput) { return updateModel(this.orm, Id, Input) }
+  deleteModel(Id: string) { return deleteModel(this.orm, Id) }
+  listDefaults() { return listDefaults(this.orm) }
+  getDefault(Id: 'default' | 'embedding') { return getDefault(this.orm, Id) }
+  upsertDefault(Id: 'default' | 'embedding', ProviderId: string, ModelId: string, DisplayName: string) {
+    return upsertDefault(this.orm, Id, ProviderId, ModelId, DisplayName)
+  }
+  deleteDefault(Id: 'default' | 'embedding') { return deleteDefault(this.orm, Id) }
 }

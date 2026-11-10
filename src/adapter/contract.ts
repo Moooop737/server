@@ -37,7 +37,7 @@ export { RetrieverHandle, PostgresRepo, EvalPostgresRepo, PostgresCodebaseRepo, 
 export { resources, sessions, messages, traces } from './repo/orm/schema'
 export { listChatSessions, getChatTrace, getSessionTranscript } from './repo/observability'
 export { ObjectStoreError } from './storage/object-store'
-export type { Repo, CodebaseRepo, ChunkCandidate, Resource, ResourceStatus, ResourceCounts, Message, Trace, TraceStage, TraceStageInput, TracePayloads, TracePayloadOmitReason, RegistedProviders, RegistedModels }
+export type { Repo, CodebaseRepo, ChunkCandidate, Resource, ResourceStatus, ResourceCounts, Message, Trace, TraceStage, TraceStageInput, TracePayloads, TracePayloadOmitReason }
 export type { ProviderKind, ModelKind, ProviderRow, ModelWithProvider, DefaultRow, ConfigSnapshot, CreateProviderInput, CreateModelInput, UpdateModelInput } from './repo/config'
 export type { EvalDataset, EvalCase, EvalGold, EvalAssertion, EvalAssertions, EvalConfig, EvalConfigKind, EvalCaseInput } from './repo/eval'
 export type { EvalRun, EvalRunStatus, EvalRunSnapshot, EvalRunCaseSnapshot, EvalRunResult, EvalHumanResult, EvalVerdict, EvalAssertionCheck, EvalAssertionResult, EvalJudgeResult, EvalCitation } from './repo/eval-run'
@@ -49,7 +49,7 @@ import 'reflect-metadata'
 import { inject, singleton } from 'tsyringe'
 import { pingDb } from './connection/pool'
 import { DbHandle } from './connection/db'
-import { EvalDbHandle } from './connection/eval-db'
+import { EvalDbHandle } from './connection/db'
 import { createOrm } from './repo/orm/client'
 import {
   createResource, updateResourceStatus, updateResourceTitle, softDeleteResource, markResourceUploaded, restoreResource,
@@ -76,17 +76,9 @@ import {
   createRun, getRun, listRuns, appendRunResult, setHumanResult, startRun, finishRun, cancelQueuedRun,
   markInterruptedRuns, deleteRun, getChunkByDataUri,
 } from './repo/eval-run'
-import {
-  listProviders, getProvider, getProviderByName, createProvider,
-  setProviderBaseUrl, setProviderEnabled, setProviderApiKey, setProviderHeaders, setProviderQuery, setProviderOptions, deleteProvider,
-  listModels, getModel, createModel, updateModel, deleteModel,
-  listDefaults, getDefault, upsertDefault, deleteDefault, readConfig,
-} from './repo/config'
-import type { CreateProviderInput, CreateModelInput, UpdateModelInput } from './repo/config'
+import { PostgresConfigRepo } from './repo/config'
 import { ollamaHealthCheck, ollamaModelList, ollamaStatusList } from './connection/ollama'
-import { type ProviderEntryName } from './provider/registry'
-import { ModelRegistry, type EmbeddingModelId, type LanguageModelId } from './model/registry'
-import { modelIdOf } from './model/key'
+import { RuntimeModelRegistry, RuntimeRegistryError } from './model/runtime-registry'
 import { embedChunks } from './model/embed-chunks'
 import { createS3Client, putObject, statObject, getObject, deleteObject, presignGet, presignPut, pingBucket, ensureBucket } from './storage/s3'
 import type { ObjectStore, ObjectGetOptions, ObjectPresignOptions, ObjectPresignPutOptions } from './storage/object-store'
@@ -224,51 +216,56 @@ interface ChunkCandidate {
 
 @singleton()
 class EmbeddingHandle {
-  readonly model: EmbeddingModelV4
-  readonly modelId: string
-  readonly dimensions: number
+  private readonly registry: RuntimeModelRegistry
 
-  constructor(@inject(AppConfig) Config: AppConfig, @inject(ModelRegistry) Models: RegistedModels) {
-    const Name = Config.embeddingModel
-    if (!Object.hasOwn(Models.embeddingModels, Name)) {
-      logError('E_EMBEDDING_MODEL', `EMBEDDING_MODEL=${Name} 不在册；在册嵌入句柄=${Object.keys(Models.embeddingModels).join(',') || '无'}`)
-      process.exit(1)
+  constructor(@inject(RuntimeModelRegistry) Registry: RuntimeModelRegistry) {
+    this.registry = Registry
+  }
+
+  get model(): EmbeddingModelV4 {
+    return this.defaults().model
+  }
+
+  get modelId(): string {
+    return this.defaults().modelId
+  }
+
+  get dimensions(): number {
+    return this.defaults().dimensions
+  }
+
+  private defaults() {
+    const Default = this.registry.embeddingDefault()
+    if (Default === null) {
+      throw new RuntimeRegistryError('E_NO_EMBEDDING_MODEL', '未配置可用的默认嵌入模型')
     }
-    this.model = Models.embeddingModels[Name as EmbeddingModelId]!
-    this.modelId = modelIdOf(Name)
-    this.dimensions = Config.embeddingDimensions
+    return Default
   }
 }
 
 @singleton()
 class ChatHandle {
-  readonly model: LanguageModelV4
-  readonly models: LanguageModels
-  readonly providers: LanguageModelProviders
-  readonly names: LanguageModelNames
+  private readonly registry: RuntimeModelRegistry
 
-  constructor(@inject(AppConfig) Config: AppConfig, @inject(ModelRegistry) Models: RegistedModels) {
-    const Name = Config.chatModel
-    this.models = Models.languageModels
-    this.providers = Models.languageProviders
-    this.names = Models.languageNames
-    if (!Object.hasOwn(this.models, Name)) {
-      logError('E_CHAT_MODEL', `CHAT_MODEL=${Name} 不在册；在册对话句柄=${Object.keys(this.models).join(',') || '无'}`)
-      process.exit(1)
-    }
-    this.model = this.models[Name as LanguageModelId]!
+  constructor(@inject(RuntimeModelRegistry) Registry: RuntimeModelRegistry) {
+    this.registry = Registry
   }
 
   resolve(Name: string): LanguageModelV4 | undefined {
-    return Object.hasOwn(this.models, Name) ? this.models[Name as LanguageModelId] : undefined
+    return this.registry.resolve(Name)
   }
 
-  catalog(): { id: string; provider: string; name: string }[] {
-    return Object.keys(this.models).map((Id) => ({
-      id: Id,
-      provider: this.providers[Id as LanguageModelId]!,
-      name: this.names[Id as LanguageModelId] ?? Id,
-    }))
+  catalog() {
+    return this.registry.catalog()
+  }
+
+  defaultKey(): string | null {
+    return this.registry.defaultKey()
+  }
+
+  defaultModel(): LanguageModelV4 | null {
+    const Key = this.registry.defaultKey()
+    return Key === null ? null : this.registry.resolve(Key) ?? null
   }
 }
 
@@ -632,99 +629,6 @@ class PostgresCodebaseRepo implements CodebaseRepo {
 }
 
 @singleton()
-class PostgresConfigRepo {
-  private readonly orm: Orm
-
-  constructor(@inject(DbHandle) Db: DbHandle) {
-    this.orm = createOrm(Db.pool)
-  }
-
-  readConfig() {
-    return readConfig(this.orm)
-  }
-
-  listProviders() {
-    return listProviders(this.orm)
-  }
-
-  getProvider(Id: string) {
-    return getProvider(this.orm, Id)
-  }
-
-  getProviderByName(Name: string) {
-    return getProviderByName(this.orm, Name)
-  }
-
-  createProvider(Input: CreateProviderInput) {
-    return createProvider(this.orm, Input)
-  }
-
-  setProviderBaseUrl(Id: string, BaseUrl: string | null) {
-    return setProviderBaseUrl(this.orm, Id, BaseUrl)
-  }
-
-  setProviderEnabled(Id: string, Enabled: boolean) {
-    return setProviderEnabled(this.orm, Id, Enabled)
-  }
-
-  setProviderApiKey(Id: string, Ciphertext: string | null) {
-    return setProviderApiKey(this.orm, Id, Ciphertext)
-  }
-
-  setProviderHeaders(Id: string, Ciphertext: string | null) {
-    return setProviderHeaders(this.orm, Id, Ciphertext)
-  }
-
-  setProviderQuery(Id: string, Query: Record<string, string>) {
-    return setProviderQuery(this.orm, Id, Query)
-  }
-
-  setProviderOptions(Id: string, Options: Record<string, unknown>) {
-    return setProviderOptions(this.orm, Id, Options)
-  }
-
-  deleteProvider(Id: string) {
-    return deleteProvider(this.orm, Id)
-  }
-
-  listModels() {
-    return listModels(this.orm)
-  }
-
-  getModel(Id: string) {
-    return getModel(this.orm, Id)
-  }
-
-  createModel(Input: CreateModelInput) {
-    return createModel(this.orm, Input)
-  }
-
-  updateModel(Id: string, Input: UpdateModelInput) {
-    return updateModel(this.orm, Id, Input)
-  }
-
-  deleteModel(Id: string) {
-    return deleteModel(this.orm, Id)
-  }
-
-  listDefaults() {
-    return listDefaults(this.orm)
-  }
-
-  getDefault(Id: 'default' | 'embedding') {
-    return getDefault(this.orm, Id)
-  }
-
-  upsertDefault(Id: 'default' | 'embedding', ProviderId: string, ModelId: string, DisplayName: string) {
-    return upsertDefault(this.orm, Id, ProviderId, ModelId, DisplayName)
-  }
-
-  deleteDefault(Id: 'default' | 'embedding') {
-    return deleteDefault(this.orm, Id)
-  }
-}
-
-@singleton()
 class ObjectStoreHandle implements ObjectStore {
   private readonly client: ReturnType<typeof createS3Client>
   private readonly bucket: string
@@ -795,19 +699,3 @@ class RetrieverHandle {
   }
 }
 
-type RegistedProviders = Partial<Record<ProviderEntryName, ProviderV4>>
-
-type LanguageModels = Partial<Record<LanguageModelId, LanguageModelV4>>
-
-type LanguageModelProviders = Partial<Record<LanguageModelId, string>>
-
-type LanguageModelNames = Partial<Record<LanguageModelId, string>>
-
-type EmbeddingModels = Partial<Record<EmbeddingModelId, EmbeddingModelV4>>
-
-type RegistedModels = {
-  languageModels: LanguageModels
-  languageProviders: LanguageModelProviders
-  languageNames: LanguageModelNames
-  embeddingModels: EmbeddingModels
-}

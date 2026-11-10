@@ -14,7 +14,7 @@ export type {
 import 'reflect-metadata'
 import { inject, singleton } from 'tsyringe'
 import { AppConfig } from '../../config'
-import { PostgresConfigRepo } from '../contract'
+import { PostgresConfigRepo } from '../repo/config'
 import { ConfigSecretError, decryptSecret, parseSecretKey } from './secret'
 import { logError, logInfo, logWarn } from '../../trace/systemtrace/log'
 

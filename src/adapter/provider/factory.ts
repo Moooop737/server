@@ -87,7 +87,10 @@ function withQuery(Query: Record<string, string>): FetchLike {
   return (Input, Init) => {
     const Url = new URL(Input instanceof Request ? Input.url : Input.toString())
     for (const [Key, Value] of Object.entries(Query)) Url.searchParams.set(Key, Value)
-    if (Input instanceof Request) return BaseFetch(new Request(Url, Input))
+    if (Input instanceof Request) {
+      const Next = new Request(Url, Input)
+      return BaseFetch(Init === undefined ? Next : new Request(Next, Init))
+    }
     return BaseFetch(Url, Init)
   }
 }

@@ -6,8 +6,7 @@
 export { ChatWorker }
 
 import { createUIMessageStreamResponse, toUIMessageStream } from 'ai'
-import { ChatHandle, PostgresRepo, RetrieverHandle } from '../../adapter/contract'
-import { RuntimeRegistryError } from '../../adapter/model/runtime-registry'
+import { PostgresRepo, RuntimeRetrievalRegistry } from '../../adapter/contract'
 import { inject, singleton } from 'tsyringe'
 import { Chat } from '../chat/chat'
 import { weaveAgentTools } from '../tool/weave'
@@ -30,22 +29,19 @@ const STEP_LIMIT = 5
 class ChatWorker {
   private readonly repo: Repo
   private readonly history: SessionHistory
-  private readonly handle: ChatHandle
-  private readonly retriever: Retriever
+  private readonly retrieval: RuntimeRetrievalRegistry
   private readonly chat = new Chat()
 
   constructor(
-    @inject(ChatHandle) Handle: ChatHandle,
-    @inject(RetrieverHandle) R: RetrieverHandle,
+    @inject(RuntimeRetrievalRegistry) R: RuntimeRetrievalRegistry,
     @inject(PostgresRepo) Repo: Repo,
     @inject(SessionHistory) History: SessionHistory) {
     this.repo = Repo
     this.history = History
-    this.handle = Handle
-    this.retriever = R.retriever
+    this.retrieval = R
   }
 
-  async ask(Query: string, SessionId: string, Signal: AbortSignal, Model?: LanguageModelV4): Promise<Response> {
+  async ask(Query: string, SessionId: string, Signal: AbortSignal, Chosen: LanguageModelV4): Promise<Response> {
     const TraceId = currentTraceId()
     const StartedMs = Date.now()
     const withTrace = <T>(Fn: () => T): T => TraceId === undefined ? Fn() : runWithTrace(TraceId, Fn)
@@ -65,12 +61,8 @@ class ChatWorker {
     try {
       const { uiMessages, modelMessages } = await this.history.loadSessionContext(Query, SessionId, HISTORY_MESSAGES, TraceId)
       let Failure: ChatFailure | null = null
-      const Chosen = Model ?? this.handle.defaultModel()
-      if (Chosen === null) {
-        throw new RuntimeRegistryError('E_NO_CHAT_MODEL', '未配置可用的默认对话模型')
-      }
       const { instructions, tools } = weaveAgentTools([
-        retrieve(this.retriever),
+        retrieve(this.retrieval.retriever()),
         resource(this.repo),
       ], GLOBAL_INSTRUCTIONS)
       const Result = this.chat.stream(modelMessages, {

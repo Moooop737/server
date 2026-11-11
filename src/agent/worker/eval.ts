@@ -15,13 +15,12 @@ import { GLOBAL_INSTRUCTIONS } from '../prompt/instruction'
 import type { LanguageModelV4 } from '@ai-sdk/provider'
 import type { EvalCitation, Repo } from '../../adapter/contract'
 import type { Retriever } from '../../retrieve/contracts'
-import type { RetrievedHit, RetrieveToolOptions } from '../tool/contracts'
+import type { RetrievedHit } from '../tool/contracts'
 
 const STEP_LIMIT = 5
 
 interface AnswerOptions {
   temperature?: number
-  search?: RetrieveToolOptions['search']
 }
 
 interface AnswerOutcome {
@@ -43,7 +42,7 @@ class EvalWorker {
   async answer(Model: LanguageModelV4, Query: string, Options: AnswerOptions = {}): Promise<AnswerOutcome> {
     try {
       const { instructions, tools } = weaveAgentTools([
-        retrieve(this.retriever, { trace: false, ...(Options.search === undefined ? {} : { search: Options.search }) }),
+        retrieve(this.retriever, { trace: false }),
         resource(this.repo),
       ], GLOBAL_INSTRUCTIONS)
       const Result = await this.chat.generate([{ role: 'user', content: Query }], {

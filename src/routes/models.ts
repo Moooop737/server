@@ -1,30 +1,30 @@
 /**
- * 模型清单路由 —— GET /models，返回在册对话模型的 { id, provider, name } 清单与默认模型。
- * name 是注册表里写死的显示名；id 是 `${provider}:${modelId}` 复合键，同一 modelId 挂两家不会互相覆盖。
- * provider 是注册表里的供应商键，前端据此挂品牌标；别在前端另抄一份映射。
- * 清单不过滤：注册了什么就列什么，坏模型也在（调用方自己认）。
- * default 来自 CHAT_MODEL，前端拿它做下拉的初始选中；不在这里做可用性探测。
+ * 模型清单路由 —— GET /models，返回可用语言模型的 { id, provider, provider_kind, icon, name } 清单与默认模型。
+ * 数据来自运行时快照：catalog() 只列 available 的语言模型；default 是默认行解析出的模型键，不可用时为 null。
+ * provider 是实例名（deepseek1 / route1），provider_kind 是工厂类型，显示与模型键用实例名。
+ * icon 是配置页给该供应商选的品牌标键（providers.icon 列），前端只按它挂标：实例名与品牌键并不相同
+ *   （route1 的 icon 是 router1），按 kind 或名字猜都会落空。未选标时为 null，前端不画。
  */
 
 import 'reflect-metadata'
 import { Hono } from 'hono'
 import { inject, injectable } from 'tsyringe'
-import { ChatHandle } from '../adapter/contract'
+import { RuntimeModelRegistry } from '../adapter/model/runtime-registry'
 
 export { ModelsRoute }
 
 @injectable()
 class ModelsRoute {
-  private readonly handle: ChatHandle
+  private readonly registry: RuntimeModelRegistry
 
-  constructor(@inject(ChatHandle) Handle: ChatHandle) {
-    this.handle = Handle
+  constructor(@inject(RuntimeModelRegistry) Registry: RuntimeModelRegistry) {
+    this.registry = Registry
   }
 
   build(): Hono {
     const app = new Hono()
 
-    app.get('/', (c) => c.json({ default: this.handle.defaultKey(), models: this.handle.catalog() }))
+    app.get('/', (c) => c.json({ default: this.registry.defaultKey(), models: this.registry.catalog() }))
 
     return app
   }

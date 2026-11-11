@@ -1,6 +1,6 @@
 /**
- * 运行快照组装 —— 把“这次跑的是什么”复制成一份只读输入：题集逐条（含 gold）、两份配置、embedding 模型/维度、语料计数。
- * 只做深拷贝式映射，不查库；调用方在 POST /eval/runs 时一次性算好，之后改题集/配置都不影响历史 run。
+ * 运行快照组装 —— 把“这次跑的是什么”复制成一份只读输入：题集逐条（含 gold）、两份配置、冻结的检索管线、embedding 模型/维度、语料计数。
+ * 只做深拷贝式映射，不查库；调用方在 POST /eval/runs 时一次性算好，之后改题集/配置/管线都不影响历史 run。
  */
 
 export { buildSnapshot }
@@ -8,6 +8,7 @@ export type { SnapshotInput }
 
 import { resolveRubric } from './judge'
 import type { EvalCase, EvalConfig, EvalDataset, EvalRunSnapshot, ResourceCounts } from '../adapter/contract'
+import type { PipelineNode } from '../retrieve/pipeline/pipeline'
 
 interface SnapshotInput {
   dataset: EvalDataset
@@ -17,6 +18,7 @@ interface SnapshotInput {
   mode?: 'retrieval' | 'answer'
   embedding: { model: string; dimensions: number }
   corpus: ResourceCounts
+  pipeline: { version: number; nodes: PipelineNode[]; output: string | null }
 }
 
 function buildSnapshot(Input: SnapshotInput): EvalRunSnapshot {
@@ -42,5 +44,10 @@ function buildSnapshot(Input: SnapshotInput): EvalRunSnapshot {
     ...(Input.mode === undefined ? {} : { mode: Input.mode }),
     embedding: { model: Input.embedding.model, dimensions: Input.embedding.dimensions },
     corpus: { ...Input.corpus },
+    pipeline: {
+      version: Input.pipeline.version,
+      nodes: Input.pipeline.nodes.map((Node) => ({ ...Node })),
+      output: Input.pipeline.output,
+    },
   }
 }

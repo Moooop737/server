@@ -17,7 +17,7 @@ import { inferRunMode } from './mode'
 import { evaluateAssertions } from './assertions'
 import { judgeCase, resolveRubric } from './judge'
 import { logError, logInfo } from '../trace/systemtrace/log'
-import { ChatHandle } from '../adapter/contract'
+import { RuntimeModelRegistry } from '../adapter/model/runtime-registry'
 
 import type { LanguageModelV4 } from '@ai-sdk/provider'
 import type { EvalRunCaseSnapshot, EvalRunResult, EvalRunSnapshot, Repo } from '../adapter/contract'
@@ -34,37 +34,28 @@ interface ActiveRun {
   aborted: boolean
 }
 
-interface RunKnobs {
-  limit: number
-  vectorTopK: number
-  lexicalTopK: number
-  minSimilarity: number
-  rrfK: number
-}
-
 interface AnswerContext {
   model: LanguageModelV4
   judgeModel: LanguageModelV4 | null
   rubric: Rubric | null
-  knobs: RunKnobs
   temperature: number
 }
 
 @singleton()
 class EvalRunner {
   private readonly repo: Repo
-  private readonly retriever: Retriever
-  private readonly chat: ChatHandle
-  private readonly worker: EvalWorker
+  private readonly assembly: EvalAssembly
+  private readonly chat: RuntimeModelRegistry
+  private retriever!: Retriever
+  private worker!: EvalWorker
   private readonly queue: QueueItem[] = []
   private active: ActiveRun | null = null
   private pumping = false
 
-  constructor(@inject(EvalAssembly) Assembly: EvalAssembly, @inject(ChatHandle) Chat: ChatHandle) {
+  constructor(@inject(EvalAssembly) Assembly: EvalAssembly, @inject(RuntimeModelRegistry) Chat: RuntimeModelRegistry) {
     this.repo = Assembly.repo
-    this.retriever = Assembly.retriever
+    this.assembly = Assembly
     this.chat = Chat
-    this.worker = new EvalWorker(this.retriever, this.repo)
   }
 
   enqueue(RunId: string): Promise<void> {
@@ -115,27 +106,34 @@ class EvalRunner {
     if (Run === null || Run.status !== 'queued') return
 
     const Mode = inferRunMode(Run.snapshot)
-    const Knobs = readKnobs(Run.snapshot)
-    if (Knobs === null) {
-      await this.repo.finishRun(RunId, 'failed', { duration_ms: 0, error_reason: '运行配置快照不合法' })
-      return
-    }
-    const Prepared = Mode === 'answer' ? this.prepareAnswer(Run.snapshot, Knobs) : null
+    const Prepared = Mode === 'answer' ? this.prepareAnswer(Run.snapshot) : null
     if (Prepared !== null && 'error' in Prepared) {
       await this.repo.finishRun(RunId, 'failed', { duration_ms: 0, error_reason: Prepared.error })
       logError('E_EVAL_RUN', `run=${RunId} ${Prepared.error}`)
       return
     }
+    const Pipeline = Run.snapshot.pipeline
+    if (Pipeline === undefined) {
+      await this.repo.finishRun(RunId, 'failed', { duration_ms: 0, error_reason: '运行快照缺管线定义' })
+      logError('E_EVAL_RUN', `run=${RunId} 运行快照缺管线定义（旧结构，历史只展示）`)
+      return
+    }
     if (!await this.repo.startRun(RunId)) return
 
+    this.retriever = this.assembly.retriever({
+      nodes: Pipeline.nodes,
+      ...(Pipeline.output === null ? {} : { output: Pipeline.output }),
+    })
+    this.worker = new EvalWorker(this.retriever, this.repo)
+
     const Started = Date.now()
-    logInfo('I_EVAL_RUN_START', `run=${RunId} mode=${Mode} cases=${Run.snapshot.cases.length} k=${Knobs.limit}`)
+    logInfo('I_EVAL_RUN_START', `run=${RunId} mode=${Mode} cases=${Run.snapshot.cases.length}`)
 
     try {
       for (const Case of Run.snapshot.cases) {
         if (State.aborted) break
         const Result = Prepared === null
-          ? await this.runCase(Case, Knobs)
+          ? await this.runCase(Case)
           : await this.runAnswerCase(Case, Prepared)
         await this.repo.appendRunResult(RunId, Result)
       }
@@ -158,7 +156,7 @@ class EvalRunner {
     }
   }
 
-  private async runCase(Case: EvalRunCaseSnapshot, Knobs: RunKnobs): Promise<EvalRunResult> {
+  private async runCase(Case: EvalRunCaseSnapshot): Promise<EvalRunResult> {
     const Started = Date.now()
     let missing = 0
     const InvalidGold: EvalRunCaseSnapshot['gold'] = []
@@ -188,13 +186,7 @@ class EvalRunner {
     }
 
     try {
-      const Result = await this.retriever.search(Case.query, {
-        limit: Knobs.limit,
-        vectorTopK: Knobs.vectorTopK,
-        lexicalTopK: Knobs.lexicalTopK,
-        minSimilarity: Knobs.minSimilarity,
-        rrfK: Knobs.rrfK,
-      })
+      const Result = await this.retriever.search(Case.query)
       const Score = scoreCase({
         negative: Case.negative,
         gold: Case.gold,
@@ -227,7 +219,7 @@ class EvalRunner {
     }
   }
 
-  private prepareAnswer(Snapshot: EvalRunSnapshot, Knobs: RunKnobs): AnswerContext | { error: string } {
+  private prepareAnswer(Snapshot: EvalRunSnapshot): AnswerContext | { error: string } {
     const ModelName = Snapshot.run_config?.config?.model
     const Model = typeof ModelName === 'string' ? this.chat.resolve(ModelName) : undefined
     if (Model === undefined) return { error: `回答模型不在册: ${String(ModelName)}` }
@@ -238,28 +230,19 @@ class EvalRunner {
 
     const JudgeName = Snapshot.metric_config?.config?.judge_model
     if (JudgeName === null || JudgeName === undefined || JudgeName === '') {
-      return { model: Model, judgeModel: null, rubric: null, knobs: Knobs, temperature: Temperature }
+      return { model: Model, judgeModel: null, rubric: null, temperature: Temperature }
     }
     if (typeof JudgeName !== 'string') return { error: 'judge_model 需为字符串或 null' }
     const JudgeModel = this.chat.resolve(JudgeName)
     if (JudgeModel === undefined) return { error: `judge 模型不在册: ${JudgeName}` }
     const Rubric = Snapshot.rubric ?? resolveRubric(Snapshot.metric_config?.config?.rubric)
     if (Rubric === null) return { error: 'rubric 版本未知' }
-    return { model: Model, judgeModel: JudgeModel, rubric: Rubric, knobs: Knobs, temperature: Temperature }
+    return { model: Model, judgeModel: JudgeModel, rubric: Rubric, temperature: Temperature }
   }
 
   private async runAnswerCase(Case: EvalRunCaseSnapshot, Ctx: AnswerContext): Promise<EvalRunResult> {
     const Started = Date.now()
-    const Answer = await this.worker.answer(Ctx.model, Case.query, {
-      temperature: Ctx.temperature,
-      search: {
-        limit: Ctx.knobs.limit,
-        vectorTopK: Ctx.knobs.vectorTopK,
-        lexicalTopK: Ctx.knobs.lexicalTopK,
-        minSimilarity: Ctx.knobs.minSimilarity,
-        rrfK: Ctx.knobs.rrfK,
-      },
-    })
+    const Answer = await this.worker.answer(Ctx.model, Case.query, { temperature: Ctx.temperature })
     const HasAssertions = Case.assertions.expect.length + Case.assertions.reject.length > 0
     const Assertion = Answer.error !== null || !HasAssertions ? null : evaluateAssertions(Answer.answer, Case.assertions)
     const Judge = Case.negative || Ctx.judgeModel === null || Ctx.rubric === null || Answer.error !== null
@@ -288,23 +271,4 @@ class EvalRunner {
   }
 }
 
-function readKnobs(Snapshot: EvalRunSnapshot): RunKnobs | null {
-  const Config = Snapshot?.run_config?.config
-  if (Config === undefined || Config === null) return null
-  const limit = positiveInt(Config.k)
-  const vectorTopK = positiveInt(Config.vector_top_k)
-  const lexicalTopK = positiveInt(Config.lexical_top_k)
-  const rrfK = positiveInt(Config.rrf)
-  const minSimilarity = typeof Config.min_similarity === 'number'
-    && Number.isFinite(Config.min_similarity)
-    && Config.min_similarity >= 0
-    && Config.min_similarity <= 1
-    ? Config.min_similarity
-    : null
-  if (limit === null || vectorTopK === null || lexicalTopK === null || rrfK === null || minSimilarity === null) return null
-  return { limit, vectorTopK, lexicalTopK, minSimilarity, rrfK }
-}
 
-function positiveInt(Value: unknown): number | null {
-  return typeof Value === 'number' && Number.isInteger(Value) && Value > 0 ? Value : null
-}

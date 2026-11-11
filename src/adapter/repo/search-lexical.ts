@@ -7,7 +7,7 @@
  *   另两条候选：match_conjunction（要求所有 token 同块，自然语言问句几乎全为 0，不可用）；
  *   parse(q, lenient=>true)（止住了抛错，但上面那几个 0 命中一个都没救回来）。
  * 本层只交候选，`score > 0` 的命中判定留在 retrieve/。字段名 'content' 必须与索引的 text_fields 键一致。
- * 软删谓词与向量路同口径，只加 `r.deleted_at IS NULL`。
+ * 软删谓词与向量路同口径，只加 `r.deleted_at IS NULL`；另加 `r.status = 'ready'`（T2 B0：防御直接写库/历史数据）。
  */
 
 export { lexicalCandidates }
@@ -25,7 +25,7 @@ async function lexicalCandidates(
     `SELECT c.*, r.title AS doc_title, r.source AS source, r.data_uri AS data_uri,
             paradedb.score(c.id) AS lexical_score
        FROM chunks c
-       JOIN resources r ON r.id = c.resource_id AND r.deleted_at IS NULL
+       JOIN resources r ON r.id = c.resource_id AND r.deleted_at IS NULL AND r.status = 'ready'
       WHERE c.content @@@ paradedb.match_disjunction('content', $1)
       ORDER BY lexical_score DESC
       LIMIT $2`,

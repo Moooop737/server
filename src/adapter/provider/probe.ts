@@ -1,6 +1,7 @@
 /**
  * provider 探测 —— 连接测试与模型发现的上游 HTTP 调用，只做 GET 列表，不发生成请求。
- * 5s 超时；不跟随重定向；响应上限 1MB；错误只回状态码与短消息，不回上游 body。
+ * 5s 超时；不跟随重定向；响应按流计字节、上限 1MB（先看 content-length）；错误只回状态码与短消息，不回上游 body。
+ * 目标校验：拒绝内嵌凭据、云 metadata 主机 / IP、link-local；loopback 放行（本机 Ollama 与本地测试上游）。
  * 本文件不读 DB / env：target 由调用方组装；也不解密，Key 已在 target 里。
  */
 
@@ -10,7 +11,7 @@ export type { ProbeTarget, ProbeResult, DiscoveredModel, DiscoverResult }
 import type { ProviderKind } from '../repo/config'
 
 const TIMEOUT_MS = 5000
-const MAX_BODY_CHARS = 1_000_000
+const MAX_BODY_BYTES = 1_000_000
 
 interface ProbeTarget {
   kind: ProviderKind
@@ -119,6 +120,7 @@ async function fetchCatalogOnce(
 }> {
   const Url = new URL(InputUrl.toString())
   for (const [Key, Value] of Object.entries(Target.query)) Url.searchParams.set(Key, Value)
+  assertProbeTarget(Url)
 
   const Headers: Record<string, string> = {}
   if (Target.api_key !== null) Headers.Authorization = `Bearer ${Target.api_key}`
@@ -143,13 +145,11 @@ async function fetchCatalogOnce(
 
   let Text: string
   try {
-    Text = await Res.text()
+    Text = await readCappedText(Res)
   } catch (Err) {
+    if (Err instanceof ProbeError) throw Err
     if (isTimeout(Err)) throw new ProbeError('E_PROVIDER_TIMEOUT', '超时')
     throw new ProbeError('E_PROVIDER_CONNECT', '连接失败')
-  }
-  if (Text.length > MAX_BODY_CHARS) {
-    throw new ProbeError('E_PROVIDER_TOO_LARGE', '上游响应过大', Res.status)
   }
 
   let Body: unknown
@@ -160,6 +160,56 @@ async function fetchCatalogOnce(
   }
 
   return { source: Source, models: Parse(Body), status: Res.status }
+}
+
+/** 探测目标白名单之外一律拒绝：内嵌凭据、云 metadata 主机、link-local 与已知 metadata IP。loopback 放行（本机 Ollama）。 */
+function assertProbeTarget(Url: URL): void {
+  if (Url.username !== '' || Url.password !== '') {
+    throw new ProbeError('E_PROVIDER_BAD_TARGET', 'base_url 不允许内嵌凭据')
+  }
+  const Host = Url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (BLOCKED_HOSTNAMES.has(Host)) {
+    throw new ProbeError('E_PROVIDER_BAD_TARGET', '目标地址不允许探测')
+  }
+  const Mapped = Host.startsWith('::ffff:') ? Host.slice(7) : Host
+  if (BLOCKED_IPV4.test(Mapped) || BLOCKED_IPV6.test(Host)) {
+    throw new ProbeError('E_PROVIDER_BAD_TARGET', '目标地址不允许探测')
+  }
+}
+
+const BLOCKED_HOSTNAMES = new Set([
+  'metadata',
+  'metadata.google.internal',
+  'metadata.goog',
+  'instance-data',
+])
+
+const BLOCKED_IPV4 = /^(169\.254\.\d+\.\d+|100\.100\.100\.200|168\.63\.129\.16)$/
+const BLOCKED_IPV6 = /^(fe[89ab][0-9a-f]:|fd00:ec2::254$)/i
+
+async function readCappedText(Res: Response): Promise<string> {
+  const Declared = Number(Res.headers.get('content-length') ?? '')
+  if (Number.isFinite(Declared) && Declared > MAX_BODY_BYTES) {
+    throw new ProbeError('E_PROVIDER_TOO_LARGE', '上游响应过大', Res.status)
+  }
+  if (Res.body === null) return ''
+  const Reader = Res.body.getReader()
+  const Chunks: Uint8Array[] = []
+  let Total = 0
+  try {
+    for (;;) {
+      const { done, value } = await Reader.read()
+      if (done) break
+      Total += value.byteLength
+      if (Total > MAX_BODY_BYTES) {
+        throw new ProbeError('E_PROVIDER_TOO_LARGE', '上游响应过大', Res.status)
+      }
+      Chunks.push(value)
+    }
+  } finally {
+    Reader.releaseLock()
+  }
+  return Buffer.concat(Chunks).toString('utf8')
 }
 
 function catalogEndpoint(Target: ProbeTarget): {

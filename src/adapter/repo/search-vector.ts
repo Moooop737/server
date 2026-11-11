@@ -7,8 +7,9 @@
  *    并且**必须留着 `WHERE e.dimension = N` 这条谓词** —— 实测摘掉任一个即退 Seq Scan（partial 索引要同时匹配表达式与谓词）。
  * 3. `::halfvec(N)` 的 N 是类型修饰符，只接受 SQL 字面量、不能用绑定参数 ⇒ Dim 经整数校验后拼进文本，
  *    这道 Number.isInteger 校验是该处唯一的注入防线（AD-9）。
- * 软删谓词只加 `r.deleted_at IS NULL`：chunks 物理删、embeddings 经 FK CASCADE 随之消失。
- * dimensionsInStore 只数 embeddings 实际存了哪些维度，供检索前的混维判定。
+ * 软删谓词只加 `r.deleted_at IS NULL`；另加 `r.status = 'ready'`（T2 B0：只检索写完的资源，防御直接写库/历史数据）。
+ * model 谓词是 T2 B0 的身份线：向量只属于产它的模型键（`${provider.name}:${model_id}`），旧模型向量不参与检索。
+ * dimensionsInStore 传 ModelKey 时只数该模型的维度（检索前混维判定）；不传则数全库（启动日志）。
  */
 
 export { vectorCandidates, dimensionsInStore }
@@ -22,6 +23,7 @@ async function vectorCandidates(
   QueryVector: number[],
   Limit: number,
   Dim: number,
+  ModelKey: string,
 ): Promise<ChunkCandidate[]> {
   if (!Number.isInteger(Dim) || Dim <= 0) {
     throw new Error(`vectorCandidates: dimension 需为正整数，收到 ${Dim}`)
@@ -29,17 +31,21 @@ async function vectorCandidates(
   if (QueryVector.length !== Dim) {
     throw new Error(`vectorCandidates: 查询向量 ${QueryVector.length} 维与检索维度 ${Dim} 不符`)
   }
+  if (!ModelKey.trim()) {
+    throw new Error('vectorCandidates: modelKey 不能为空')
+  }
 
   const { rows } = await Db.query(
     `SELECT c.*, r.title AS doc_title, r.source AS source, r.data_uri AS data_uri,
             (1 - (e.embedding::halfvec(${Dim}) <=> $1::halfvec(${Dim})))::float8 AS similarity
        FROM embeddings e
        JOIN chunks c    ON c.id = e.source_id
-       JOIN resources r ON r.id = c.resource_id AND r.deleted_at IS NULL
+       JOIN resources r ON r.id = c.resource_id AND r.deleted_at IS NULL AND r.status = 'ready'
       WHERE e.dimension = ${Dim}
+        AND e.model = $3
       ORDER BY e.embedding::halfvec(${Dim}) <=> $1::halfvec(${Dim})
       LIMIT $2`,
-    [`[${QueryVector.join(',')}]`, Limit],
+    [`[${QueryVector.join(',')}]`, Limit, ModelKey],
   )
 
   return rows.map((row: Record<string, unknown>) => ({
@@ -52,7 +58,9 @@ async function vectorCandidates(
   }))
 }
 
-async function dimensionsInStore(Db: Pool): Promise<number[]> {
-  const { rows } = await Db.query(`SELECT DISTINCT dimension FROM embeddings ORDER BY dimension`)
+async function dimensionsInStore(Db: Pool, ModelKey?: string): Promise<number[]> {
+  const { rows } = ModelKey === undefined
+    ? await Db.query('SELECT DISTINCT dimension FROM embeddings ORDER BY dimension')
+    : await Db.query('SELECT DISTINCT dimension FROM embeddings WHERE model = $1 ORDER BY dimension', [ModelKey])
   return rows.map((row: { dimension: number }) => Number(row.dimension))
 }

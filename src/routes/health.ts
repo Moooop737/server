@@ -3,7 +3,9 @@
  * 两层判定只有一条链：叶子全通过 → 服务 ok；服务全 ok → 顶层 ok / 200，否则 degraded / 503。
  * 并发跑全部叶子、逐个 try/catch：单项抛错转 ok:false 并留 detail，不炸掉整体响应。
  * 整份结果缓存 CacheTtlMs（默认 5s），期内直接复用缓存体与状态码，避免频繁真实探测；未做并发去重。
- * ollama 模型名带 tag（如 qwenembed:latest）而 EMBEDDING_MODEL 是 `${provider}:${modelId}` 复合键，故就绪判定先用 modelIdOf 取裸 modelId，再同时匹配裸名与 `${emb}:` 前缀。
+ * ollama 组只认 kind='ollama' 的 provider（D2 拍）：每次 ping 现读快照选目标（默认嵌入优先、其次默认语言），
+ *   base 去掉末尾 /v1；模型名带 tag（如 qwenembed:latest）时裸名与 `${name}:` 前缀都算就绪。
+ * 没有 ollama 系 provider 时三只探针恒 ok:true + detail 'no ollama provider'（Runtime&Boot #11）。
  * eval 组：共享模式恒 ok 并标 mode=shared（主库同一池已由 postgres 组覆盖，不重复探）；隔离模式才真 ping 评测库。
  */
 
@@ -15,7 +17,6 @@ export type { EvalProbe, HealthCheck, HealthService, ProbeResult }
 
 import type { RuntimeModelRegistry } from '../adapter/model/runtime-registry'
 import type { ObjectStore, Repo } from '../adapter/contract'
-import { json, map } from 'zod';
 
 interface ProbeResult {
   ok: boolean
@@ -49,10 +50,6 @@ interface CachedResponse {
 }
 
 function createHealthServices(Runtime: RuntimeModelRegistry, Repo: Repo, Store: ObjectStore, Eval: EvalProbe): HealthService[] {
-  const Target = ollamaProbeTarget(Runtime)
-  const base = Target?.base ?? ''
-  const emb = Target?.modelId ?? ''
-
   return [
     {
       name: 'postgres',
@@ -84,8 +81,9 @@ function createHealthServices(Runtime: RuntimeModelRegistry, Repo: Repo, Store: 
         {
           name: 'version',
           ping: async () => {
+            const Target = ollamaProbeTarget(Runtime)
             if (Target === null) return { ok: true, detail: ['no ollama provider'] }
-            const rep = await ollamaHealthCheck(base)
+            const rep = await ollamaHealthCheck(Target.base)
             return {
               ok: await (rep !== 'error'),
               detail: rep
@@ -95,10 +93,11 @@ function createHealthServices(Runtime: RuntimeModelRegistry, Repo: Repo, Store: 
         {
           name: 'models',
           ping: async () => {
+            const Target = ollamaProbeTarget(Runtime)
             if (Target === null) return { ok: true, detail: ['no ollama provider'] }
-            const models = await ollamaModelList(base)
+            const models = await ollamaModelList(Target.base)
             return {
-              ok: models.some((m) => m.name === emb || m.name.startsWith(`${emb}:`)),
+              ok: models.some((m) => m.name === Target.modelId || m.name.startsWith(`${Target.modelId}:`)),
               detail: models.map((m) => m.name),
             }
           },
@@ -106,8 +105,9 @@ function createHealthServices(Runtime: RuntimeModelRegistry, Repo: Repo, Store: 
         {
           name: 'running',
           ping: async () => {
+            const Target = ollamaProbeTarget(Runtime)
             if (Target === null) return { ok: true, detail: ['no ollama provider'] }
-            const ps = await ollamaStatusList(base)
+            const ps = await ollamaStatusList(Target.base)
             return {
               ok: true,
               detail: ps.map((m) => ({ name: m.name, expires_at: m.expires_at, size_vram: m.size_vram })),
@@ -132,14 +132,13 @@ function createHealthServices(Runtime: RuntimeModelRegistry, Repo: Repo, Store: 
 }
 
 function ollamaProbeTarget(Runtime: RuntimeModelRegistry): { base: string; modelId: string } | null {
-  const Config = Runtime.current().config
-  for (const Key of [Config.defaults.embedding, Config.defaults.language]) {
-    if (Key === null) continue
-    const Model = Config.models.find((Item) => Item.key === Key && Item.available)
+  const Snap = Runtime.current()
+  for (const Kind of ['embedding', 'language'] as const) {
+    const Model = Snap.config.models.find((Item) => Item.isDefault && Item.kind === Kind)
     if (Model === undefined) continue
-    const Provider = Config.providers.find((Item) => Item.name === Model.provider_name && Item.available)
+    const Provider = Snap.config.providers.find((Item) => Item.name === Model.provider_name && Item.available)
     if (Provider === undefined || Provider.base_url === null) continue
-    if (Provider.kind !== 'ollama' && Provider.kind !== 'openai-compatible') continue
+    if (Provider.kind !== 'ollama') continue
     return {
       base: Provider.base_url.replace(/\/v1\/?$/, '').replace(/\/+$/, ''),
       modelId: Model.model_id,

@@ -14,6 +14,7 @@ import { RetrieveRoute } from './routes/retrieve'
 import { ChatRoute } from './routes/chat'
 import { ModelsRoute } from './routes/models'
 import { ConfigRoute } from './routes/config'
+import { ConfigRetrievalRoute } from './routes/config-retrieval'
 import { EvalRoute } from './routes/eval'
 import { EvalAssembly } from './eval/assembly'
 import { SessionsRoute } from './routes/sessions'
@@ -21,7 +22,7 @@ import { ObservabilityRoute } from './routes/observability'
 import { TracesRoute } from './routes/traces'
 import { createCrudRoot, registerAllCrud } from './routes/crud'
 import { createDocRoute } from './routes/doc'
-import { ObjectStoreHandle, PostgresCodebaseRepo, PostgresRepo } from './adapter/contract'
+import { ObjectStoreHandle, PostgresCodebaseRepo, PostgresRepo, RuntimeRetrievalRegistry } from './adapter/contract'
 import { RuntimeModelRegistry } from './adapter/model/runtime-registry'
 import { AppConfig, cleanUpOnBoot } from './config'
 import { serve } from '@hono/node-server'
@@ -31,17 +32,38 @@ import { setupLangfuse } from './trace/llmtrace/langfuse'
 
 setupLangfuse()
 
+function errorCodeOf(Err: unknown): string | null {
+  let Current: unknown = Err
+  while (Current !== null && typeof Current === 'object') {
+    const Code = (Current as { code?: unknown }).code
+    if (typeof Code === 'string') return Code
+    Current = (Current as { cause?: unknown }).cause
+  }
+  return null
+}
+
 void (async () => {
   const repo = container.resolve(PostgresRepo)
   const config = container.resolve(AppConfig)
   const store = container.resolve(ObjectStoreHandle)
   const Runtime = container.resolve(RuntimeModelRegistry)
+  const Retrieval = container.resolve(RuntimeRetrievalRegistry)
 
   try {
     await Runtime.load()
     logInfo('I_CONFIG_LOADED', '运行时配置已装载')
   } catch (err) {
-    logError('E_CONFIG_LOAD', err instanceof Error ? (err.stack ?? err.message) : String(err))
+    const Code = errorCodeOf(err) ?? 'E_CONFIG_LOAD'
+    logError(Code, err instanceof Error ? (err.stack ?? err.message) : String(err))
+    process.exit(1)
+  }
+
+  try {
+    const Snap = await Retrieval.load()
+    logInfo('I_RETRIEVAL_LOADED', `检索管线已装载 generation=${Snap.generation} version=${Snap.version} nodes=${Snap.pipeline.nodes.length}`)
+  } catch (err) {
+    const Code = errorCodeOf(err) ?? 'E_RETRIEVAL_CONFIG_LOAD'
+    logError(Code, err instanceof Error ? (err.stack ?? err.message) : String(err))
     process.exit(1)
   }
 
@@ -66,6 +88,7 @@ void (async () => {
     app.route('/chat', container.resolve(ChatRoute).build())
     app.route('/models', container.resolve(ModelsRoute).build())
     app.route('/config', container.resolve(ConfigRoute).build())
+    app.route('/config/retrieval', container.resolve(ConfigRetrievalRoute).build())
     await registerAllCrud(app)
     app.route('/doc', createDocRoute(router, `http://${config.host}:${config.port}`))
 

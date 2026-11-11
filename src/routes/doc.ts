@@ -697,6 +697,7 @@ const CustomPaths = {
           properties: {
             query: { type: 'string' },
             sessionId: { type: 'string', format: 'uuid', description: 'POST /sessions 生成的会话 UUID' },
+            model: { type: 'string', description: '可选；不在册 400 E_UNKNOWN_MODEL，缺省走会话记录 → 默认行' },
           },
         }),
       },
@@ -705,8 +706,9 @@ const CustomPaths = {
           description: 'SSE 流；Scalar 的 Try it 可能只显示原始流，建议用前端/curl',
           content: { 'text/event-stream': { schema: { type: 'string' } } },
         },
-        400: Err('body.query 不合法或为空白；sessionId 不是 UUID'),
+        400: Err('body.query 不合法或为空白；sessionId 不是 UUID；model 不在册（E_UNKNOWN_MODEL）'),
         404: Err('会话不存在或已删除'),
+        409: Err('没有可用的默认对话模型（E_NO_CHAT_MODEL）'),
         500: Err('问答失败'),
       },
     },
@@ -715,9 +717,9 @@ const CustomPaths = {
     get: {
       tags: ['Config'],
       operationId: 'getConfigStatus',
-      summary: '当前运行时快照状态',
+      summary: '模型与检索两个注册表的状态汇总',
       responses: {
-        200: Ok('生成号、计数、默认可用性、最近一次 reload', Ref('ConfigStatus')),
+        200: Ok('装载时间、计数、默认可用性、最近一次 reload', Ref('ConfigStatus')),
         503: Err('运行时配置尚未装载'),
       },
     },
@@ -726,7 +728,7 @@ const CustomPaths = {
     post: {
       tags: ['Config'],
       operationId: 'reloadConfig',
-      summary: '手动重载运行时配置',
+      summary: '手动重载模型与检索配置',
       responses: {
         200: Ok('重载结果', { type: 'object', required: ['reload_ok'], properties: ReloadFields }),
       },
@@ -776,6 +778,7 @@ const CustomPaths = {
       operationId: 'deleteConfigProvider',
       summary: '硬删供应商，级联模型与默认行',
       responses: {
+        400: Err('id 不是 UUID / 请求体不合法'),
         200: Ok('删除结果；写后已尝试热更新', WriteSchema('deleted', { type: 'boolean' })),
         404: Err('供应商不存在'),
       },
@@ -799,6 +802,7 @@ const CustomPaths = {
       operationId: 'clearConfigProviderApiKey',
       summary: '清除供应商 Key',
       responses: {
+        400: Err('id 不是 UUID / 请求体不合法'),
         200: Ok('更新结果', WriteSchema('provider', Ref('ConfigProvider'))),
         404: Err('供应商不存在'),
       },
@@ -925,6 +929,7 @@ const CustomPaths = {
       operationId: 'deleteConfigModel',
       summary: '硬删模型，同事务删指向它的默认行',
       responses: {
+        400: Err('id 不是 UUID / 请求体不合法'),
         200: Ok('删除结果；写后已尝试热更新', WriteSchema('deleted', { type: 'boolean' })),
         404: Err('模型不存在'),
       },
@@ -960,8 +965,118 @@ const CustomPaths = {
       operationId: 'deleteConfigDefault',
       summary: '删除默认行',
       responses: {
+        400: Err('id 不是 UUID / 请求体不合法'),
         200: Ok('删除结果；写后已尝试热更新', WriteSchema('deleted', { type: 'boolean' })),
         404: Err('默认行不存在'),
+      },
+    },
+  },
+  '/config/retrieval': {
+    get: {
+      tags: ['Config'],
+      operationId: 'getRetrievalPipeline',
+      summary: '指定管线的定义与 generation（?pipeline_id=，缺省 default）',
+      responses: {
+        200: Ok('管线快照', {
+          type: 'object',
+          required: ['pipeline_id', 'current', 'pipeline', 'version'],
+          properties: {
+            pipeline_id: { type: 'string' },
+            current: { type: 'boolean' },
+            pipeline: {
+              type: 'object',
+              required: ['nodes'],
+              properties: {
+                nodes: { type: 'array', items: { type: 'object' } },
+                output_node: { type: 'string', nullable: true },
+              },
+            },
+            version: { type: 'integer' },
+            generation: { type: 'integer', nullable: true },
+            loaded_at: { type: 'string', format: 'date-time', nullable: true },
+            last_reload: { type: 'object', nullable: true },
+          },
+        }),
+        404: Err('管线不存在'),
+        503: Err('检索管线尚未装载'),
+      },
+    },
+    put: {
+      tags: ['Config'],
+      operationId: 'replaceRetrievalPipeline',
+      summary: '整图替换管线（装配预检 → 写库 version+1；default 写后热加载）',
+      responses: {
+        200: Ok('热加载结果与版本', {
+          type: 'object',
+          required: ['reload_ok'],
+          properties: { ...ReloadFields, version: { type: 'integer' }, generation: { type: 'integer', nullable: true } },
+        }),
+        400: Err('管线不合法（E_PIPELINE_INVALID / E_NODE_CONFIG / E_SCHEMA_UNSUPPORTED）'),
+        404: Err('管线不存在'),
+      },
+    },
+  },
+  '/config/retrieval/defs': {
+    get: {
+      tags: ['Config'],
+      operationId: 'listRetrievalPipelines',
+      summary: '管线清单（id / version / enabled）',
+      responses: {
+        200: Ok('管线清单', {
+          type: 'object',
+          required: ['pipelines'],
+          properties: { pipelines: { type: 'array', items: { type: 'object' } } },
+        }),
+      },
+    },
+  },
+  '/config/retrieval/components': {
+    get: {
+      tags: ['Config'],
+      operationId: 'listRetrievalComponents',
+      summary: '组件清单与端口 / config 的 JSON Schema',
+      responses: {
+        200: Ok('组件清单', {
+          type: 'object',
+          required: ['components'],
+          properties: { components: { type: 'array', items: { type: 'object' } } },
+        }),
+      },
+    },
+  },
+  '/config/retrieval/validate': {
+    post: {
+      tags: ['Config'],
+      operationId: 'validateRetrievalPipeline',
+      summary: '草稿管线预检，不落库',
+      responses: {
+        200: Ok('校验结果 { ok } 或 { ok:false, errors }', {
+          type: 'object',
+          required: ['ok'],
+          properties: { ok: { type: 'boolean' }, errors: { type: 'array', items: { type: 'object' } } },
+        }),
+        400: Err('请求体不合法'),
+      },
+    },
+  },
+  '/config/retrieval/test': {
+    post: {
+      tags: ['Config'],
+      operationId: 'testRetrievalPipeline',
+      summary: '指名管线试检索（可带 draft 做 A/B；同 query 只 embed 一次）',
+      responses: {
+        200: Ok('两侧命中与计数', {
+          type: 'object',
+          required: ['pipeline_id', 'current', 'embed_shared'],
+          properties: {
+            pipeline_id: { type: 'string' },
+            current: { type: 'object' },
+            draft: { type: 'object', nullable: true },
+            embed_shared: { type: 'boolean' },
+          },
+        }),
+        400: Err('query / draft / pipeline_id 不合法'),
+        404: Err('管线不存在'),
       },
     },
   },
@@ -994,7 +1109,7 @@ const CustomSchemas = {
       header_names: { type: 'array', items: { type: 'string' } },
       headers_status: { type: 'string', enum: ['none', 'set', 'error'] },
       query: { type: 'object', additionalProperties: { type: 'string' } },
-      options: { type: 'object', additionalProperties: true },
+      options: { type: 'object', additionalProperties: true, description: '按 kind 白名单：openai-compatible 认 supportsStructuredOutputs / supportsMultiPartToolContent / includeUsage；dashscope 认 includeUsage / videoBaseURL / embeddingBaseURL；deepseek / ollama 只允许 {}；未知键 400' },
       enabled: { type: 'boolean' },
       available: { type: 'boolean' },
       unavailable_reason: { type: ['string', 'null'] },
@@ -1061,16 +1176,17 @@ const CustomSchemas = {
       name: { type: 'string', pattern: '^[a-z0-9][a-z0-9_-]{0,31}$' },
       kind: { type: 'string', enum: ['deepseek', 'dashscope', 'openai-compatible', 'ollama'] },
       icon: { type: ['string', 'null'], maxLength: 32 },
-      base_url: { type: ['string', 'null'] },
-      options: { type: 'object', additionalProperties: true },
+      base_url: { type: ['string', 'null'], description: 'ollama / openai-compatible 必填 http(s) 且不得内嵌凭据；deepseek / dashscope 必须为空' },
+      options: { type: 'object', additionalProperties: true, description: '按 kind 白名单，见 ConfigProvider.options' },
     },
   },
   ConfigProviderPatch: {
     type: 'object',
+    minProperties: 1,
     properties: {
-      base_url: { type: ['string', 'null'] },
+      base_url: { type: ['string', 'null'], description: '同创建时的 kind 约束' },
       enabled: { type: 'boolean' },
-      options: { type: 'object', additionalProperties: true },
+      options: { type: 'object', additionalProperties: true, description: '按 kind 白名单，未知键 400' },
       icon: { type: ['string', 'null'], maxLength: 32 },
     },
   },
@@ -1082,12 +1198,12 @@ const CustomSchemas = {
   ConfigHeaders: {
     type: 'object',
     required: ['headers'],
-    properties: { headers: { type: 'object', additionalProperties: { type: 'string' } } },
+    properties: { headers: { type: 'object', additionalProperties: { type: 'string' }, description: '最多 32 个；名 RFC 7230 token；值 1–1024 字符不含 CR/LF；整组 ≤8KB；{} 清空；整组替换，不回显值' } },
   },
   ConfigQuery: {
     type: 'object',
     required: ['query'],
-    properties: { query: { type: 'object', additionalProperties: { type: 'string' } } },
+    properties: { query: { type: 'object', additionalProperties: { type: 'string' }, description: '最多 32 个；键值 1–1024 字符不含 CR/LF；整组 ≤8KB；{} 清空；明文回显，不要放密钥' } },
   },
   ConfigDraftProbe: {
     type: 'object',
@@ -1139,7 +1255,7 @@ const CustomSchemas = {
       model_id: { type: 'string' },
       kind: { type: 'string', enum: ['language', 'embedding'] },
       display_name: { type: 'string', maxLength: 80 },
-      dimensions: { type: ['integer', 'null'], minimum: 1, maximum: 16000 },
+      dimensions: { type: 'integer', minimum: 1, maximum: 16000, description: 'kind=embedding 必填；kind=language 不接受' },
     },
   },
   ConfigModelPatch: {
@@ -1147,7 +1263,7 @@ const CustomSchemas = {
     properties: {
       display_name: { type: 'string', maxLength: 80 },
       enabled: { type: 'boolean' },
-      dimensions: { type: ['integer', 'null'], minimum: 1, maximum: 16000 },
+      dimensions: { type: 'integer', minimum: 1, maximum: 16000, description: '仅 embedding 行；language 行不接受数值' },
     },
   },
   ConfigDefaultPut: {
@@ -1166,10 +1282,10 @@ const CustomSchemas = {
           type: 'object',
           required: ['model_id', 'kind'],
           properties: {
-            model_id: { type: 'string' },
+            model_id: { type: 'string', minLength: 1 },
             kind: { type: 'string', enum: ['language', 'embedding'] },
-            display_name: { type: 'string' },
-            dimensions: { type: 'integer', minimum: 1, maximum: 16000 },
+            display_name: { type: 'string', maxLength: 80 },
+            dimensions: { type: 'integer', minimum: 1, maximum: 16000, description: 'kind=embedding 必填' },
           },
         },
       },
@@ -1179,16 +1295,22 @@ const CustomSchemas = {
     type: 'object',
     required: ['added', 'skipped', 'reload_ok'],
     properties: {
-      added: { type: 'array', items: { type: 'object', additionalProperties: true } },
-      skipped: { type: 'array', items: { type: 'object', additionalProperties: true } },
-      reload_ok: { type: 'boolean' },
-      reload_error: { type: 'string' },
-    },
-  },
-  ConfigWriteMeta: {
-    type: 'object',
-    required: ['reload_ok'],
-    properties: {
+      added: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['id', 'model_id', 'kind'],
+          properties: { id: { type: 'string' }, model_id: { type: 'string' }, kind: { type: 'string' } },
+        },
+      },
+      skipped: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['model_id', 'reason'],
+          properties: { model_id: { type: 'string' }, reason: { type: 'string', enum: ['exists'] } },
+        },
+      },
       reload_ok: { type: 'boolean' },
       reload_error: { type: 'string' },
     },

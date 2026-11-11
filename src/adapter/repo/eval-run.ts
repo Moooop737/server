@@ -20,6 +20,7 @@ import type { Pool } from 'pg'
 import type { Orm } from './orm/client'
 import type { Chunk } from './chunk'
 import type { EvalGold, EvalAssertions } from './eval'
+import type { PipelineNode } from '../../retrieve/pipeline/pipeline'
 import type { ResourceCounts } from './resource'
 
 type EvalRunStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
@@ -43,6 +44,8 @@ interface EvalRunSnapshot {
   mode?: 'retrieval' | 'answer'
   embedding: { model: string; dimensions: number }
   corpus: ResourceCounts
+  /* 创建 run 时冻结的检索管线；旧 run 没有该字段，执行器拒绝跑（历史只展示） */
+  pipeline?: { version: number; nodes: PipelineNode[]; output: string | null }
 }
 
 type EvalVerdict = 'pass' | 'fail' | 'unscored'

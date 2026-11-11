@@ -10,7 +10,8 @@ export { ResourceIngest, IngestGateError }
 import 'reflect-metadata'
 import { inject, singleton } from 'tsyringe'
 import { AppConfig } from '../config'
-import { EmbeddingHandle, ObjectStoreHandle, PostgresRepo } from '../adapter/contract'
+import { ObjectStoreHandle, PostgresRepo } from '../adapter/contract'
+import { RuntimeModelRegistry, RuntimeRegistryError } from '../adapter/model/runtime-registry'
 import type { Repo, Resource } from '../adapter/contract'
 import { IngestFactory } from '../ingest/ingest'
 import type { IngestResult, Recipe } from '../ingest/contracts'
@@ -39,20 +40,20 @@ class ResourceIngest {
   private readonly store: ObjectStoreHandle
   private readonly repo: Repo
   private readonly factory: IngestFactory
-  private readonly embedding: EmbeddingHandle
+  private readonly registry: RuntimeModelRegistry
 
   constructor(
     @inject(AppConfig) Config: AppConfig,
     @inject(ObjectStoreHandle) Store: ObjectStoreHandle,
     @inject(PostgresRepo) Repo: Repo,
     @inject(IngestFactory) Factory: IngestFactory,
-    @inject(EmbeddingHandle) Embedding: EmbeddingHandle,
+    @inject(RuntimeModelRegistry) Registry: RuntimeModelRegistry,
   ) {
     this.config = Config
     this.store = Store
     this.repo = Repo
     this.factory = Factory
-    this.embedding = Embedding
+    this.registry = Registry
   }
 
   async confirmUpload(Id: string): Promise<Resource> {
@@ -65,11 +66,18 @@ class ResourceIngest {
     const { resource, expected, stat } = gated
 
     const chunker = Chunker?.trim() || 'legacy'
+    let embedding
+    try {
+      embedding = this.registry.requireEmbeddingDefault()
+    } catch (Err) {
+      if (Err instanceof RuntimeRegistryError) throw new IngestGateError(Err.code, Err.message, resource)
+      throw Err
+    }
     const recipe: Recipe = {
       fetcher: 'storage',
       parser: expected === 'text/html' ? 'html' : 'text',
       chunker,
-      embedding: this.embedding,
+      embedding,
       repo: this.repo,
     }
     const uploaded = { ...resource, status: 'uploaded' as const, storage_size_bytes: stat.size }

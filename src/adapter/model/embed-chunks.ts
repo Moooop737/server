@@ -10,12 +10,18 @@
 export { embedChunks }
 
 import { embedMany } from 'ai'
-import type { EmbeddingHandle } from '../contract'
+import type { EmbeddingModelV4 } from '@ai-sdk/provider'
+import type { RuntimeModel } from '../config/runtime'
 
 const EMBED_TIMEOUT_MS = 30_000
 const EMBED_BATCH_SIZE = 32
 
-async function embedChunks(Texts: string[], Target: EmbeddingHandle, Signal?: AbortSignal): Promise<number[][]> {
+async function embedChunks(Texts: string[], Target: RuntimeModel, Signal?: AbortSignal): Promise<number[][]> {
+  const Model = Target.model as EmbeddingModelV4 | null
+  if (Model === null || Target.dimensions === null) {
+    throw new Error(`embedChunks: 模型 ${Target.key} 缺少句柄或 dimensions`)
+  }
+  const Dimensions = Target.dimensions
   const embeddings: number[][] = []
 
   for (let start = 0; start < Texts.length; start += EMBED_BATCH_SIZE) {
@@ -23,9 +29,9 @@ async function embedChunks(Texts: string[], Target: EmbeddingHandle, Signal?: Ab
     if (Signal) signals.push(Signal)
 
     const { embeddings: batch } = await embedMany({
-      model: Target.model,
+      model: Model,
       values: Texts.slice(start, start + EMBED_BATCH_SIZE),
-      dimensions: Target.dimensions,
+      dimensions: Dimensions,
       abortSignal: AbortSignal.any(signals),
       telemetry: { isEnabled: false },
     })

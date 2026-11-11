@@ -10,7 +10,8 @@ import { Client } from 'pg'
 import { container } from 'tsyringe'
 import { AppConfig } from '../src/config'
 import { EvalAssembly } from '../src/eval/assembly'
-import { EmbeddingHandle, ObjectStoreHandle } from '../src/adapter/contract'
+import { ObjectStoreHandle } from '../src/adapter/contract'
+import { RuntimeModelRegistry } from '../src/adapter/model/runtime-registry'
 import { IngestFactory } from '../src/ingest/ingest'
 import { ResourceIngest } from '../src/resource/ingest'
 import { buildDataUri, parseDataUri } from '../src/adapter/storage/uri'
@@ -60,7 +61,7 @@ async function main(): Promise<void> {
       container.resolve(ObjectStoreHandle),
       Assembly.repo,
       container.resolve(IngestFactory),
-      container.resolve(EmbeddingHandle),
+      container.resolve(RuntimeModelRegistry),
     ),
   }
 

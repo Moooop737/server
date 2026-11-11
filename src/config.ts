@@ -2,17 +2,18 @@
  * 配置装载 —— 从 process.env 读并校验，缺必需项/非法值当场打印结构化 JSON 并 process.exit(1)。
  * 打印与终止都住在本文件：AppConfig 是 @singleton() 类，谁第一个把它叫起来都一样 —— 不依赖调用顺序，也不再包一层 root 侧的 try/catch。
  * 代价说清：这条错误路径**不可被 catch**，要在测试里断「缺 DATABASE_URL 报 E_CONFIG_MISSING」只能开子进程看退出码与 stdout。
- * numOrThrow() 是整数型 env 的解析 + 范围校验工具，floatOrThrow() 管小数（检索阈值）；两者都在构造器里用。
- * embeddingDimensions 非 1024 不阻断、仅 warn：P1 只建 1024 档 partial HNSW，其它维度检索退顺序扫描（结果仍对、只是慢）。见 addendum A / AD-4。
- * CHAT_MODEL 与另外三个是必需项（缺失走 E_CONFIG_MISSING），值是 `${provider}:${modelId}` 复合键，但本文件不校验它在不在 model 清单里——那由 ChatHandle 的构造点名（E_CHAT_MODEL）；服务商与它的 Key 归 adapter/provider 登记表，本文件不再认 CHAT_PROVIDER。host 固定 127.0.0.1（AD-8 仅本地监听）。
+ * numOrThrow() 是整数型 env 的解析 + 范围校验工具；在构造器里用。
+ * 模型与供应商不进 env：CHAT_MODEL / EMBEDDING_MODEL / EMBEDDING_DIMENSIONS / OLLAMA_BASE_URL 已随 T1 退役，运行时只读 DB
+ *   （provider / model / 默认行 → RuntimeModelRegistry 快照）。host 固定 127.0.0.1（AD-8 仅本地监听）。
  * S3_* 是对象存储必需项；S3_ENDPOINT 必须等于浏览器访问 MinIO 的 Host（presign 的 Host 会被签进 URL），末尾斜杠会被去掉；S3_REGION 默认 us-east-1，S3_FORCE_PATH_STYLE 默认 true。密钥只进 AppConfig，不打印、不进错误信息。
  * EVAL_DATABASE_URL 是可选开关：不设 = 评测跑主库（共享模式）；设了 = 评测世界用独立库（隔离模式）。见 eval/assembly.ts；不进 missing。
+ * CONFIG_SECRET_KEY 是可选 env（32 字节 base64）：DB 有密文时必需，空库可缺省；加密/解密与校验全在 adapter/config/secret.ts。
  */
 
 import 'reflect-metadata'
 import { singleton } from 'tsyringe'
 import type { CodebaseRepo, Repo } from './adapter/contract';
-import { logInfo, logWarn, logError } from './trace/systemtrace/log'
+import { logInfo, logError } from './trace/systemtrace/log'
 
 export { AppConfig, getEnv, cleanUpOnBoot }
 
@@ -22,18 +23,13 @@ class AppConfig {
   readonly port: number
   readonly databaseUrl: string
   readonly evalDatabaseUrl: string | null
-  readonly retrievalVectorTopK: number
-  readonly retrievalLexicalTopK: number
-  readonly retrievalMinSimilarity: number   // 余弦相似度下限
-  readonly retrievalRrfK: number            // RRF 的 k，标准取 60
-  readonly retrievalDefaultLimit: number    // 融合后送进上下文的条数
+  readonly configSecretKey: string | undefined
   readonly s3Endpoint: string
   readonly s3Region: string
   readonly s3Bucket: string
   readonly s3AccessKeyId: string
   readonly s3SecretAccessKey: string
   readonly s3ForcePathStyle: boolean
-  readonly configSecretKey: string | undefined
 
   constructor() {
     const missing: string[] = []
@@ -42,20 +38,13 @@ class AppConfig {
     const s3Bucket = getEnv('S3_BUCKET', missing)
     const s3AccessKeyId = getEnv('S3_ACCESS_KEY_ID', missing)
     const s3SecretAccessKey = getEnv('S3_SECRET_ACCESS_KEY', missing)
-    
     if (missing.length > 0) {
       fail('E_CONFIG_MISSING', `必需的环境变量缺失: ${missing.join(', ')}`)
     }
     this.port = numOrThrow(getEnv('PORT'), 'PORT', 3000, 1, 65535)
-    this.configSecretKey = getEnv('CONFIG_SECRET_KEY')
     this.databaseUrl = databaseUrl!
     this.evalDatabaseUrl = parseEvalDatabaseUrl(getEnv('EVAL_DATABASE_URL'), this.databaseUrl)
-
-    this.retrievalVectorTopK = numOrThrow(getEnv('RETRIEVAL_VECTOR_TOPK'), 'RETRIEVAL_VECTOR_TOPK', 10, 1, 100)
-    this.retrievalLexicalTopK = numOrThrow(getEnv('RETRIEVAL_LEXICAL_TOPK'), 'RETRIEVAL_LEXICAL_TOPK', 10, 1, 100)
-    this.retrievalMinSimilarity = floatOrThrow(getEnv('RETRIEVAL_MIN_SIMILARITY'), 'RETRIEVAL_MIN_SIMILARITY', 0.42, 0, 1)
-    this.retrievalRrfK = numOrThrow(getEnv('RETRIEVAL_RRF_K'), 'RETRIEVAL_RRF_K', 60, 1, 1000)
-    this.retrievalDefaultLimit = numOrThrow(getEnv('RETRIEVAL_DEFAULT_LIMIT'), 'RETRIEVAL_DEFAULT_LIMIT', 6, 1, 100)
+    this.configSecretKey = getEnv('CONFIG_SECRET_KEY')
 
     this.s3Endpoint = endpointOrThrow(s3EndpointRaw!, 'S3_ENDPOINT')
     this.s3Region = getEnv('S3_REGION') ?? 'us-east-1'
@@ -91,21 +80,6 @@ async function cleanUpOnBoot(repo: Repo, codebases: CodebaseRepo, EmbeddingDimen
   } catch (err) {
     logError('E_DIMENSION_PROBE', String(err))
   }
-}
-
-function floatOrThrow(
-  Raw: string | undefined,
-  Name: string,
-  Def: number,
-  Min: number,
-  Max: number,
-): number {
-  if (Raw === undefined) return Def
-  const v = Number(Raw)
-  if (!Number.isFinite(v) || v < Min || v > Max) {
-    fail('E_CONFIG_INVALID', `${Name} 需为 ${Min}-${Max} 的数值，收到: ${Raw}`)
-  }
-  return v
 }
 
 function numOrThrow(

@@ -1,7 +1,8 @@
 /**
- * 检索探底 CLI —— 读一批问题，走生产 Retriever（与 /retrieve 同一只实例）跑一遍，打印每条 top-k 命中与文档级指标。
+ * 检索探底 CLI —— 读一批问题，走生产 Retriever（与 /retrieve 同一只实例）跑一遍，打印每条命中与文档级指标。
  * 定位：Epic 7 Step 1「先看当前错在哪」的重复工具，不是正式评测——无 chunk 级 gold、不落库、不写 Langfuse。
- * 跑法：npm run eval:probe -- [--cases scripts/eval-cases.json] [--k 5] [--level L2] [--json /tmp/report.json]
+ * 跑法：npm run eval:probe -- [--cases scripts/eval-cases.json] [--level L2] [--json /tmp/report.json]
+ * 条数与阈值只认管线自身 config，本脚本不传覆盖。
  * 不传 sink → NoopStageSink 且 embed telemetry 关闭，因此不写 trace_stages、不进 Langfuse。
  * 匹配口径：case.expect[].path 是 dataUri 片段；带了 chunkIndex 就精确到块，否则只认文档。
  * 指标：正例记首个相关命中的名次（hit@k / MRR）；负例看命中数与 top1 相似度，0 命中才算正确拒答。
@@ -12,7 +13,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { container } from 'tsyringe'
-import { EmbeddingHandle, RetrieverHandle } from '../src/adapter/contract'
+import { RuntimeRetrievalRegistry } from '../src/adapter/contract'
+import { RuntimeModelRegistry } from '../src/adapter/model/runtime-registry'
 import type { RetrievedChunk } from '../src/retrieve/contracts'
 
 interface CaseExpect {
@@ -36,7 +38,6 @@ interface CaseSpec {
 
 interface ProbeArgs {
   cases: string
-  k: number
   level: string | null
   json: string | null
 }
@@ -72,14 +73,15 @@ async function main(): Promise<void> {
   const Selected = Args.level === null ? Spec.cases : Spec.cases.filter((C) => C.level === Args.level)
   if (Selected.length === 0) throw new Error(`没有匹配的 case（level=${Args.level ?? '全部'}）`)
 
-  const Handle = container.resolve(RetrieverHandle)
-  const Embedding = container.resolve(EmbeddingHandle)
+  const Retrieval = container.resolve(RuntimeRetrievalRegistry)
+  await Retrieval.load()
+  const Embedding = container.resolve(RuntimeModelRegistry).requireEmbeddingDefault()
 
-  console.log(`\neval-probe  ${Spec.name}  cases=${Selected.length}  k=${Args.k}  model=${Embedding.modelId}  dim=${Embedding.dimensions}\n`)
+  console.log(`\neval-probe  ${Spec.name}  cases=${Selected.length}  model=${Embedding.model_id}  dim=${Embedding.dimensions}\n`)
 
   const Rows: CaseRow[] = []
   for (const C of Selected) {
-    const Row = await runCase(Handle, C, Args.k)
+    const Row = await runCase(Retrieval, C)
     Rows.push(Row)
     printCase(Row)
   }
@@ -87,15 +89,15 @@ async function main(): Promise<void> {
 
   if (Args.json !== null) {
     mkdirSync(dirname(resolve(Args.json)), { recursive: true })
-    writeFileSync(Args.json, JSON.stringify({ spec: Spec.name, k: Args.k, model: Embedding.modelId, dimensions: Embedding.dimensions, cases: Rows }, null, 2))
+    writeFileSync(Args.json, JSON.stringify({ spec: Spec.name, model: Embedding.model_id, dimensions: Embedding.dimensions, cases: Rows }, null, 2))
     console.log(`\n报告已写入 ${Args.json}`)
   }
 }
 
-async function runCase(Handle: RetrieverHandle, C: ProbeCase, K: number): Promise<CaseRow> {
+async function runCase(Retrieval: RuntimeRetrievalRegistry, C: ProbeCase): Promise<CaseRow> {
   const Base = { id: C.id, level: C.level, query: C.query, negative: C.negative === true }
   try {
-    const Result = await Handle.retriever.search(C.query, { limit: K })
+    const Result = await Retrieval.retriever().search(C.query)
     const Hits: HitRow[] = Result.hits.map((Hit, Index) => ({
       rank: Index + 1,
       path: shortPath(Hit.dataUri),
@@ -175,23 +177,21 @@ function fmt(Value: number | null, Digits: number): string {
 }
 
 function parseArgs(Argv: string[]): ProbeArgs {
-  const Out: ProbeArgs = { cases: resolve(SCRIPT_DIR, 'eval-cases.json'), k: 5, level: null, json: null }
+  const Out: ProbeArgs = { cases: resolve(SCRIPT_DIR, 'eval-cases.json'), level: null, json: null }
   for (let i = 0; i < Argv.length; i++) {
     const Key = Argv[i]
     const Val = Argv[i + 1]
     if (Key === '--help' || Key === '-h') {
-      console.log('用法: npm run eval:probe -- [--cases <path>] [--k <n>] [--level <L1|L2|L3|L4|L5>] [--json <path>]')
+      console.log('用法: npm run eval:probe -- [--cases <path>] [--level <L1|L2|L3|L4|L5>] [--json <path>]')
       process.exit(0)
     }
     if (Val === undefined) throw new Error(`参数 ${Key} 缺值`)
     if (Key === '--cases') Out.cases = resolve(Val)
-    else if (Key === '--k') Out.k = Number(Val)
     else if (Key === '--level') Out.level = Val
     else if (Key === '--json') Out.json = resolve(Val)
     else throw new Error(`未知参数: ${Key}`)
     i++
   }
-  if (!Number.isInteger(Out.k) || Out.k < 1) throw new Error('--k 需为正整数')
   return Out
 }
 

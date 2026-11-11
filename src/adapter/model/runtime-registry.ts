@@ -6,23 +6,22 @@
  */
 
 export { RuntimeModelRegistry, RuntimeRegistryError }
-export type { RuntimeSnapshot, RuntimeReloadResult, RuntimeStatus, EmbeddingDefault }
+export type { RuntimeSnapshot, RuntimeReloadResult, RuntimeStatus }
 
 import 'reflect-metadata'
 import { inject, singleton } from 'tsyringe'
 import { RuntimeConfigLoader } from '../config/runtime'
 import { buildProviderHandles } from '../provider/factory'
-import { logError, logInfo } from '../../trace/systemtrace/log'
+import { logError, logInfo, logWarn } from '../../trace/systemtrace/log'
 
-import type { EmbeddingModelV4, LanguageModelV4, ProviderV4 } from '@ai-sdk/provider'
-import type { RuntimeConfig } from '../config/runtime'
+import type { LanguageModelV4, ProviderV4 } from '@ai-sdk/provider'
+import type { RuntimeConfig, RuntimeModel } from '../config/runtime'
 
 interface RuntimeSnapshot {
+  generation: number
   loaded_at: string
   config: RuntimeConfig
   providers: Map<string, ProviderV4>
-  languageModels: Map<string, LanguageModelV4>
-  embeddingModels: Map<string, EmbeddingModelV4>
 }
 
 interface RuntimeReloadResult {
@@ -30,14 +29,8 @@ interface RuntimeReloadResult {
   error_code: string | null
 }
 
-interface EmbeddingDefault {
-  key: string
-  model: EmbeddingModelV4
-  modelId: string
-  dimensions: number
-}
-
 interface RuntimeStatus {
+  generation: number
   loaded_at: string
   provider_count: number
   model_count: number
@@ -61,6 +54,7 @@ class RuntimeModelRegistry {
   private snapshot: RuntimeSnapshot | null = null
   private queue: Promise<unknown> = Promise.resolve()
   private lastReload: RuntimeStatus['last_reload'] = null
+  private generation = 0
   private readonly loader: RuntimeConfigLoader
 
   constructor(@inject(RuntimeConfigLoader) Loader: RuntimeConfigLoader) {
@@ -100,76 +94,90 @@ class RuntimeModelRegistry {
   }
 
   resolve(Key: string): LanguageModelV4 | undefined {
-    return this.current().languageModels.get(Key)
+    const Model = this.current().config.models.find((Item) => Item.key === Key && Item.kind === 'language')
+    return (Model?.model as LanguageModelV4 | null) ?? undefined
   }
 
-  catalog(): { id: string; provider: string; provider_kind: string; name: string }[] {
+  catalog(): { id: string; provider: string; provider_kind: string; icon: string | null; name: string }[] {
     return this.current().config.models
       .filter((Item) => Item.kind === 'language' && Item.available)
       .map((Item) => ({
         id: Item.key,
         provider: Item.provider_name,
         provider_kind: Item.provider_kind,
+        icon: Item.provider_icon,
         name: Item.display_name,
       }))
   }
 
   defaultKey(): string | null {
-    return this.current().config.defaults.language
+    return this.current().config.models.find((Item) => Item.isDefault && Item.kind === 'language')?.key ?? null
+  }
+
+  defaultModel(): LanguageModelV4 | null {
+    const Model = this.current().config.models.find((Item) => Item.isDefault && Item.kind === 'language')
+    return (Model?.model as LanguageModelV4 | null) ?? null
   }
 
   status(): RuntimeStatus {
     const Snap = this.current()
     return {
+      generation: Snap.generation,
       loaded_at: Snap.loaded_at,
       provider_count: Snap.config.providers.length,
       model_count: Snap.config.models.length,
-      default_chat_available: Snap.config.defaults.language !== null,
-      default_embedding_available: Snap.config.defaults.embedding !== null,
+      default_chat_available: Snap.config.models.some((Item) => Item.isDefault && Item.kind === 'language'),
+      default_embedding_available: Snap.config.models.some((Item) => Item.isDefault && Item.kind === 'embedding'),
       last_reload: this.lastReload,
     }
   }
 
-  embeddingDefault(): EmbeddingDefault | null {
-    const Snap = this.current()
-    const Key = Snap.config.defaults.embedding
-    if (Key === null) return null
-    const Model = Snap.config.models.find((Item) => Item.key === Key)
-    const Handle = Snap.embeddingModels.get(Key)
-    if (Model === undefined || Handle === undefined) return null
-    if (Model.dimensions === null) return null
-    return { key: Key, model: Handle, modelId: Model.model_id, dimensions: Model.dimensions }
+  embeddingDefault(): RuntimeModel | null {
+    return this.current().config.models.find((Item) => Item.isDefault && Item.kind === 'embedding') ?? null
+  }
+
+  requireEmbeddingDefault(): RuntimeModel {
+    const Default = this.embeddingDefault()
+    if (Default === null) {
+      throw new RuntimeRegistryError('E_NO_EMBEDDING_MODEL', '未配置可用的默认嵌入模型')
+    }
+    return Default
   }
 
   private async build(): Promise<RuntimeSnapshot> {
     const Config = await this.loader.load()
     const Providers = buildProviderHandles(Config.providers)
-    const LanguageModels = new Map<string, LanguageModelV4>()
-    const EmbeddingModels = new Map<string, EmbeddingModelV4>()
-
-    for (const Model of Config.models) {
-      if (!Model.available) continue
+    const Models = Config.models.map((Model) => {
+      if (!Model.available) return Model
       const Provider = Providers.get(Model.provider_name)
-      if (Provider === undefined) continue
-      if (Model.kind === 'embedding') {
-        EmbeddingModels.set(Model.key, Provider.embeddingModel(Model.model_id))
-      } else {
-        LanguageModels.set(Model.key, Provider.languageModel(Model.model_id))
+      if (Provider === undefined) return Model
+      try {
+        const Handle = Model.kind === 'embedding'
+          ? Provider.embeddingModel(Model.model_id)
+          : Provider.languageModel(Model.model_id)
+        return { ...Model, model: Handle }
+      } catch (Err) {
+        /* 供应商不支持该模型类型（如 deepseek 没有 embeddingModel）时跳过，不让一行坏配置拖垮整次装载 */
+        logWarn('W_MODEL_SKIP', `模型 ${Model.key} 造句柄失败，已跳过：${Err instanceof Error ? Err.message : String(Err)}`)
+        return Model
       }
-    }
+    })
+    const FinalModels = Models.map((Model) => (
+      Model.isDefault && Model.model === null ? { ...Model, isDefault: false } : Model
+    ))
+    const Defaults = FinalModels.filter((Model) => Model.isDefault)
 
     logInfo(
       'I_RUNTIME_REGISTRY',
       `providers=${Providers.size}`
-      + ` language=${LanguageModels.size} embedding=${EmbeddingModels.size}`
-      + ` default=${Config.defaults.language ?? 'null'} embedDefault=${Config.defaults.embedding ?? 'null'}`,
+      + ` models=${FinalModels.filter((Model) => Model.model !== null).length}`
+      + ` default=${Defaults.map((Model) => `${Model.kind}=${Model.key}`).join(',') || 'none'}`,
     )
     return {
+      generation: ++this.generation,
       loaded_at: Config.loaded_at,
-      config: Config,
+      config: { ...Config, models: FinalModels },
       providers: Providers,
-      languageModels: LanguageModels,
-      embeddingModels: EmbeddingModels,
     }
   }
 

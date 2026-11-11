@@ -1,8 +1,7 @@
 /**
- * 评测世界装配 —— 只决定评测用哪个库：共享模式复用主库的 Repo / Retriever；隔离模式只换 Repo，
- * 交由主 RetrieverHandle.forRepo 用同一份 factory/embedding/config 重建 retriever。
- * ObjectStore / Embedding / RetrieverFactory 等无状态或外部句柄共享，不把 Repo 改成多实例容器。
- * 共享 vs 隔离是启动期 env 选择（EVAL_DATABASE_URL），不做运行时切换；共享模式不碰评测库连接。
+ * 评测世界装配 —— 只决定评测用哪个库：retriever(Definition) 按冻结的管线定义在「本世界数据 repo」上装配。
+ * 管线定义来自 run 快照（创建时冻结），所以评测结果与当时的管线版本绑定；不再问运行时注册表。
+ * 不再持有 embedding（D17）；创建 run 需要快照时由 routes/eval 直接问 RuntimeModelRegistry。
  */
 
 export { EvalAssembly }
@@ -11,10 +10,12 @@ export type { EvalMode }
 import 'reflect-metadata'
 import { container, inject, singleton } from 'tsyringe'
 import { AppConfig } from '../config'
-import { EmbeddingHandle, EvalPostgresRepo, PostgresRepo, RetrieverHandle } from '../adapter/contract'
+import { EvalPostgresRepo, PostgresRepo, RETRIEVAL_COMPONENTS, assembleRetriever } from '../adapter/contract'
+import { RuntimeModelRegistry } from '../adapter/model/runtime-registry'
 
 import type { Repo } from '../adapter/contract'
 import type { Retriever } from '../retrieve/contracts'
+import type { PipelineDef } from '../retrieve/pipeline/pipeline'
 
 type EvalMode = 'shared' | 'isolated'
 
@@ -22,26 +23,25 @@ type EvalMode = 'shared' | 'isolated'
 class EvalAssembly {
   readonly mode: EvalMode
   readonly repo: Repo
-  readonly retriever: Retriever
-  readonly embedding: EmbeddingHandle
+  private readonly models: RuntimeModelRegistry
 
   constructor(
     @inject(AppConfig) Config: AppConfig,
     @inject(PostgresRepo) MainRepo: Repo,
-    @inject(EmbeddingHandle) Embedding: EmbeddingHandle,
-    @inject(RetrieverHandle) MainHandle: RetrieverHandle,
+    @inject(RuntimeModelRegistry) Models: RuntimeModelRegistry,
   ) {
-    this.embedding = Embedding
+    this.models = Models
     if (!Config.evalDatabaseUrl) {
       this.mode = 'shared'
       this.repo = MainRepo
-      this.retriever = MainHandle.retriever
       return
     }
 
     this.mode = 'isolated'
-    const EvalRepo = container.resolve(EvalPostgresRepo)
-    this.repo = EvalRepo
-    this.retriever = MainHandle.forRepo(EvalRepo)
+    this.repo = container.resolve(EvalPostgresRepo)
+  }
+
+  retriever(Definition: PipelineDef): Retriever {
+    return assembleRetriever(Definition, RETRIEVAL_COMPONENTS, { repo: this.repo, registry: this.models })
   }
 }

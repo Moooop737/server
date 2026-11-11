@@ -20,7 +20,8 @@ export type {
 
 import 'reflect-metadata'
 import { inject, singleton } from 'tsyringe'
-import { and, asc, eq, ne } from 'drizzle-orm'
+import { and, asc, eq, ne, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import { models, providers } from './orm/schema'
 import { createOrm } from './orm/client'
 import { DbHandle } from '../connection/db'
@@ -65,6 +66,7 @@ interface DefaultRow {
   provider_kind: ProviderKind
   model_id: string
   display_name: string
+  dimensions: number | null
   enabled: boolean
   created_at: string
   updated_at: string
@@ -144,7 +146,38 @@ function jsonObject(Value: unknown): Record<string, unknown> {
   return { ...(Value as Record<string, unknown>) }
 }
 
-function rowToProvider(Row: any): ProviderRow {
+interface ProviderRawRow {
+  id: string
+  name: string
+  kind: string
+  icon: string | null
+  base_url: string | null
+  api_key_ciphertext: string | null
+  headers_ciphertext: string | null
+  query: unknown
+  options: unknown
+  enabled: boolean
+  created_at: Date | string
+  updated_at: Date | string
+}
+
+interface ModelRawRow {
+  id: string
+  provider_id: string
+  provider_name: string
+  provider_kind: string
+  model_id: string
+  kind: string
+  display_name: string
+  dimensions: number | null
+  enabled: boolean
+  created_at: Date | string
+  updated_at: Date | string
+}
+
+interface DefaultRawRow extends Omit<ModelRawRow, 'kind'> {}
+
+function rowToProvider(Row: ProviderRawRow): ProviderRow {
   return {
     id: Row.id,
     name: Row.name,
@@ -161,7 +194,7 @@ function rowToProvider(Row: any): ProviderRow {
   }
 }
 
-function rowToModel(Row: any): ModelWithProvider {
+function rowToModel(Row: ModelRawRow): ModelWithProvider {
   return {
     id: Row.id,
     provider_id: Row.provider_id,
@@ -177,7 +210,7 @@ function rowToModel(Row: any): ModelWithProvider {
   }
 }
 
-function rowToDefault(Row: any): DefaultRow {
+function rowToDefault(Row: DefaultRawRow): DefaultRow {
   return {
     id: Row.id as DefaultRow['id'],
     provider_id: Row.provider_id,
@@ -185,6 +218,7 @@ function rowToDefault(Row: any): DefaultRow {
     provider_kind: Row.provider_kind as ProviderKind,
     model_id: Row.model_id,
     display_name: Row.display_name,
+    dimensions: Row.dimensions === null || Row.dimensions === undefined ? null : Number(Row.dimensions),
     enabled: Row.enabled === true,
     created_at: iso(Row.created_at),
     updated_at: iso(Row.updated_at),
@@ -332,14 +366,16 @@ async function updateModel(Db: Orm, Id: string, Input: UpdateModelInput): Promis
 
 async function deleteModel(Db: Orm, Id: string): Promise<boolean> {
   return Db.transaction(async (Tx) => {
-    const Target = await Tx.select({ provider_id: models.provider_id, model_id: models.model_id })
+    const Target = await Tx.select({ provider_id: models.provider_id, model_id: models.model_id, kind: models.kind })
       .from(models)
       .where(and(eq(models.id, Id), ne(models.kind, 'default')))
       .limit(1)
     const Row = Target[0]
     if (Row === undefined) return false
+    const Slot = Row.kind === 'language' ? 'default' : 'embedding'
     await Tx.delete(models).where(and(
       eq(models.kind, 'default'),
+      eq(models.id, Slot),
       eq(models.provider_id, Row.provider_id),
       eq(models.model_id, Row.model_id),
     ))
@@ -351,22 +387,33 @@ async function deleteModel(Db: Orm, Id: string): Promise<boolean> {
 }
 
 async function listDefaults(Db: Orm): Promise<DefaultRow[]> {
-  const Rows = await Db.select(DefaultColumns)
-    .from(models)
-    .innerJoin(providers, eq(providers.id, models.provider_id))
-    .where(eq(models.kind, 'default'))
-    .orderBy(asc(models.id))
-  return Rows.map(rowToDefault)
+  return selectDefaultRows(Db)
 }
 
 async function getDefault(Db: Orm, Id: 'default' | 'embedding'): Promise<DefaultRow | null> {
-  const Rows = await Db.select(DefaultColumns)
+  const Rows = await selectDefaultRows(Db)
+  return Rows.find((Row) => Row.id === Id) ?? null
+}
+
+async function selectDefaultRows(Db: Pick<Orm, 'select'>): Promise<DefaultRow[]> {
+  const TargetModel = alias(models, 'target_model')
+  const Rows = await Db.select({
+    ...DefaultColumns,
+    dimensions: TargetModel.dimensions,
+  })
     .from(models)
     .innerJoin(providers, eq(providers.id, models.provider_id))
-    .where(and(eq(models.kind, 'default'), eq(models.id, Id)))
-    .limit(1)
-  const Row = Rows[0]
-  return Row === undefined ? null : rowToDefault(Row)
+    .leftJoin(
+      TargetModel,
+      and(
+        eq(TargetModel.provider_id, models.provider_id),
+        eq(TargetModel.model_id, models.model_id),
+        eq(TargetModel.kind, sql`CASE WHEN ${models.id} = 'default' THEN 'language' ELSE 'embedding' END`),
+      ),
+    )
+    .where(eq(models.kind, 'default'))
+    .orderBy(asc(models.id))
+  return Rows.map(rowToDefault)
 }
 
 async function upsertDefault(
@@ -414,15 +461,11 @@ async function readConfig(Db: Orm): Promise<ConfigSnapshot> {
       .innerJoin(providers, eq(providers.id, models.provider_id))
       .where(ne(models.kind, 'default'))
       .orderBy(asc(providers.name), asc(models.kind), asc(models.model_id))
-    const DefaultRows = await Tx.select(DefaultColumns)
-      .from(models)
-      .innerJoin(providers, eq(providers.id, models.provider_id))
-      .where(eq(models.kind, 'default'))
-      .orderBy(asc(models.id))
+    const DefaultRows = await selectDefaultRows(Tx)
     return {
       providers: ProviderRows.map(rowToProvider),
       models: ModelRows.map(rowToModel),
-      defaults: DefaultRows.map(rowToDefault),
+      defaults: DefaultRows,
     }
   }, { isolationLevel: 'repeatable read' })
 }

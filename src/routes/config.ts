@@ -1,6 +1,7 @@
 /**
  * /config —— 供应商 / 模型 / 默认模型的配置 API；裸 Hono，不进 hono-crud。
  * 写接口：DB 成功后 reload，返回 reload_ok；GET 从当前快照投影，不回明文 Key / headers。
+ * /reload 串联模型与检索两个注册表；/status 汇总两者（retrieval 未装载时为 null）。
  * 本文件只做校验、错误映射与响应投影；加解密在 config/secret.ts，SQL 在 repo/config.ts。
  */
 
@@ -11,7 +12,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { inject, injectable } from 'tsyringe'
 import { AppConfig } from '../config'
-import { PostgresConfigRepo } from '../adapter/contract'
+import { PostgresConfigRepo, RuntimeRetrievalRegistry } from '../adapter/contract'
 import { RuntimeModelRegistry } from '../adapter/model/runtime-registry'
 import { ConfigSecretError, decryptSecret, encryptSecret, parseSecretKey } from '../adapter/config/secret'
 import { discoverProvider, probeProvider, ProbeError } from '../adapter/provider/probe'
@@ -28,6 +29,7 @@ const OPTION_KEYS: Record<ProviderKind, readonly string[]> = {
   dashscope: ['includeUsage', 'videoBaseURL', 'embeddingBaseURL'],
   'openai-compatible': ['supportsStructuredOutputs', 'supportsMultiPartToolContent', 'includeUsage'],
 }
+const EMBEDDING_KINDS: ProviderKind[] = ['openai-compatible', 'dashscope']
 const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -35,15 +37,18 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 class ConfigRoute {
   private readonly repo: PostgresConfigRepo
   private readonly runtime: RuntimeModelRegistry
+  private readonly retrieval: RuntimeRetrievalRegistry
   private readonly config: AppConfig
 
   constructor(
     @inject(PostgresConfigRepo) Repo: PostgresConfigRepo,
     @inject(RuntimeModelRegistry) Runtime: RuntimeModelRegistry,
+    @inject(RuntimeRetrievalRegistry) Retrieval: RuntimeRetrievalRegistry,
     @inject(AppConfig) Config: AppConfig,
   ) {
     this.repo = Repo
     this.runtime = Runtime
+    this.retrieval = Retrieval
     this.config = Config
   }
 
@@ -51,21 +56,26 @@ class ConfigRoute {
     const app = new Hono()
     const repo = this.repo
     const runtime = this.runtime
+    const retrieval = this.retrieval
     const config = this.config
 
     app.get('/status', (c) => {
       try {
-        return c.json(runtime.status())
+        return c.json({ ...runtime.status(), retrieval: retrievalStatus(retrieval) })
       } catch {
         return c.json({ code: 'E_CONFIG_NOT_LOADED', message: '运行时配置尚未装载' }, 503)
       }
     })
 
     app.post('/reload', async (c) => {
-      const Result = await runtime.reload()
+      const Models = await runtime.reload()
+      const Retrieval = await retrieval.reload()
+      const Ok = Models.ok && Retrieval.ok
       return c.json({
-        reload_ok: Result.ok,
-        ...(Result.error_code === null ? {} : { reload_error: Result.error_code }),
+        reload_ok: Ok,
+        ...(Ok ? {} : { reload_error: Models.error_code ?? Retrieval.error_code }),
+        models: { reload_ok: Models.ok, ...(Models.error_code === null ? {} : { reload_error: Models.error_code }) },
+        retrieval: { reload_ok: Retrieval.ok, ...(Retrieval.error_code === null ? {} : { reload_error: Retrieval.error_code }) },
       })
     })
 
@@ -128,33 +138,27 @@ class ConfigRoute {
       const Body = await readObject(c)
       if (Body === null) return bad(c, 'E_BAD_JSON', '请求体需为 JSON 对象')
 
-      let Changed = false
-      if (Object.hasOwn(Body, 'base_url')) {
-        const Base = parseBaseUrl(Row.kind, Body.base_url, false)
-        if (!Base.ok) return bad(c, 'E_BAD_BASE_URL', Base.message)
-        if (Base.value !== undefined && await repo.setProviderBaseUrl(Id, Base.value) === false) {
-          return notFound(c, '供应商不存在')
-        }
-        Changed = true
-      }
+      const Base = Object.hasOwn(Body, 'base_url') ? parseBaseUrl(Row.kind, Body.base_url, false) : null
+      if (Base !== null && !Base.ok) return bad(c, 'E_BAD_BASE_URL', Base.message)
+      let Enabled: boolean | undefined
       if (Object.hasOwn(Body, 'enabled')) {
         if (typeof Body.enabled !== 'boolean') return bad(c, 'E_BAD_ENABLED', 'enabled 需为 boolean')
-        if (await repo.setProviderEnabled(Id, Body.enabled) === false) return notFound(c, '供应商不存在')
-        Changed = true
+        Enabled = Body.enabled
       }
-      if (Object.hasOwn(Body, 'options')) {
-        const Options = parseOptions(Row.kind, Body.options)
-        if (!Options.ok) return bad(c, 'E_BAD_OPTIONS', Options.message)
-        if (await repo.setProviderOptions(Id, Options.value ?? {}) === false) return notFound(c, '供应商不存在')
-        Changed = true
+      const Options = Object.hasOwn(Body, 'options') ? parseOptions(Row.kind, Body.options) : null
+      if (Options !== null && !Options.ok) return bad(c, 'E_BAD_OPTIONS', Options.message)
+      const Icon = Object.hasOwn(Body, 'icon') ? parseIcon(Body.icon) : null
+      if (Icon !== null && !Icon.ok) return bad(c, 'E_BAD_ICON', Icon.message)
+      if (Base === null && Enabled === undefined && Options === null && Icon === null) {
+        return bad(c, 'E_BAD_BODY', '至少提供 base_url / enabled / options / icon 一项')
       }
-      if (Object.hasOwn(Body, 'icon')) {
-        const Icon = parseIcon(Body.icon)
-        if (!Icon.ok) return bad(c, 'E_BAD_ICON', Icon.message)
-        if (await repo.setProviderIcon(Id, Icon.value) === false) return notFound(c, '供应商不存在')
-        Changed = true
+
+      if (Base !== null && Base.value !== undefined && await repo.setProviderBaseUrl(Id, Base.value) === false) {
+        return notFound(c, '供应商不存在')
       }
-      if (!Changed) return bad(c, 'E_BAD_BODY', '至少提供 base_url / enabled / options / icon 一项')
+      if (Enabled !== undefined && await repo.setProviderEnabled(Id, Enabled) === false) return notFound(c, '供应商不存在')
+      if (Options !== null && await repo.setProviderOptions(Id, Options.value ?? {}) === false) return notFound(c, '供应商不存在')
+      if (Icon !== null && await repo.setProviderIcon(Id, Icon.value) === false) return notFound(c, '供应商不存在')
 
       const Updated = await repo.getProvider(Id)
       if (Updated === null) return notFound(c, '供应商不存在')
@@ -310,6 +314,7 @@ class ConfigRoute {
 
       const Items: CreateModelInput[] = []
       const Seen = new Set<string>()
+      const Skipped: Array<{ model_id: string; reason: 'exists' }> = []
       for (const Raw of RawModels) {
         if (Raw === null || typeof Raw !== 'object' || Array.isArray(Raw)) {
           return bad(c, 'E_BAD_MODELS', 'models 每项需为对象')
@@ -323,7 +328,13 @@ class ConfigRoute {
         if (DisplayName === null || DisplayName.length > 80) return bad(c, 'E_BAD_DISPLAY_NAME', 'display_name 需为 1–80 字符')
         const Dimensions = parseDimensions(Kind, Item.dimensions)
         if (!Dimensions.ok) return bad(c, 'E_BAD_DIMENSIONS', Dimensions.message)
-        if (Seen.has(ModelId)) continue
+        if (Kind === 'embedding' && !EMBEDDING_KINDS.includes(Provider.kind)) {
+          return c.json({ code: 'E_EMBEDDING_KIND_UNSUPPORTED', message: `kind=${Provider.kind} 的供应商不支持嵌入模型` }, 422)
+        }
+        if (Seen.has(ModelId)) {
+          Skipped.push({ model_id: ModelId, reason: 'exists' })
+          continue
+        }
         Seen.add(ModelId)
         Items.push({
           id: `${Provider.name}:${ModelId}`,
@@ -336,7 +347,6 @@ class ConfigRoute {
       }
 
       const Added: Array<{ id: string; model_id: string; kind: string }> = []
-      const Skipped: Array<{ model_id: string; reason: 'exists' }> = []
       for (const Item of Items) {
         try {
           const Model = await repo.createModel(Item)
@@ -347,15 +357,17 @@ class ConfigRoute {
             continue
           }
           logError('E_CONFIG_MODEL_IMPORT', String(err))
-          return c.json({ code: 'E_CONFIG_MODEL_IMPORT', message: '导入模型失败' }, 500)
+          return c.json({ code: 'E_CONFIG_MODEL_IMPORT', message: '导入模型失败', added: Added }, 500)
         }
       }
       return await respond(c, runtime, () => ({ added: Added, skipped: Skipped }))
     })
 
-    app.get('/models', (c) => {
+    app.get('/models', async (c) => {
       try {
-        return c.json({ models: runtime.current().config.models.map(modelView) })
+        const Rows = await repo.listModels()
+        const Snap = currentConfig(runtime)
+        return c.json({ models: Rows.map((Row) => modelRowView(Row, Snap)) })
       } catch {
         return c.json({ code: 'E_CONFIG_NOT_LOADED', message: '运行时配置尚未装载' }, 503)
       }
@@ -376,6 +388,9 @@ class ConfigRoute {
       if (!Dimensions.ok) return bad(c, 'E_BAD_DIMENSIONS', Dimensions.message)
       const Provider = await repo.getProvider(ProviderId)
       if (Provider === null) return bad(c, 'E_BAD_PROVIDER_ID', 'provider 不存在')
+      if (Kind === 'embedding' && !EMBEDDING_KINDS.includes(Provider.kind)) {
+        return c.json({ code: 'E_EMBEDDING_KIND_UNSUPPORTED', message: `kind=${Provider.kind} 的供应商不支持嵌入模型` }, 422)
+      }
       const Input: CreateModelInput = {
         id: `${Provider.name}:${ModelId}`,
         provider_id: Provider.id,
@@ -386,7 +401,7 @@ class ConfigRoute {
       }
       try {
         const Model = await repo.createModel(Input)
-        return await respond(c, runtime, () => ({ model: modelView(Model) }))
+        return await respond(c, runtime, () => ({ model: modelViewFromSnapshot(runtime, Model.id, Model) }))
       } catch (err) {
         return mapUnique(c, err, 'E_MODEL_TAKEN', '模型已存在', 'E_CONFIG_MODEL_CREATE', '新建模型失败')
       }
@@ -408,7 +423,7 @@ class ConfigRoute {
       if (!Dimensions.ok) return bad(c, 'E_BAD_DIMENSIONS', Dimensions.message)
       const Updated = await repo.updateModel(Id, { display_name: DisplayName, dimensions: Dimensions.value, enabled: Enabled })
       if (Updated === null) return notFound(c, '模型不存在')
-      return await respond(c, runtime, () => ({ model: modelView(Updated) }))
+      return await respond(c, runtime, () => ({ model: modelViewFromSnapshot(runtime, Updated.id, Updated) }))
     })
 
     app.delete('/models/:id', async (c) => {
@@ -437,11 +452,8 @@ class ConfigRoute {
       if (Model === null) return bad(c, 'E_DEFAULT_MODEL_NOT_FOUND', '模型不存在')
       const Expected = Id === 'default' ? 'language' : 'embedding'
       if (Model.kind !== Expected) return bad(c, 'E_DEFAULT_KIND_MISMATCH', `${Id} 需要 ${Expected} 模型`)
-      await repo.upsertDefault(Id, Provider.id, ModelId, Id === 'default' ? '默认对话模型' : '默认嵌入模型')
-      return await respond(c, runtime, () => {
-        const Default = runtime.current().config.models.find((Item) => Item.key === `${Provider.name}:${ModelId}`)
-        return { default: Default === undefined ? null : modelView(Default) }
-      })
+      const Saved = await repo.upsertDefault(Id, Provider.id, ModelId, Id === 'default' ? '默认对话模型' : '默认嵌入模型')
+      return await respond(c, runtime, () => ({ default: defaultView(Saved, currentConfig(runtime)) }))
     })
 
     app.delete('/defaults/:id', async (c) => {
@@ -462,6 +474,14 @@ async function respond(c: Context, runtime: RuntimeModelRegistry, Build: () => u
     reload_ok: Result.ok,
     ...(Result.error_code === null ? {} : { reload_error: Result.error_code }),
   })
+}
+
+function retrievalStatus(registry: RuntimeRetrievalRegistry) {
+  try {
+    return registry.status()
+  } catch {
+    return null
+  }
 }
 
 function currentConfig(runtime: RuntimeModelRegistry): RuntimeConfig | null {
@@ -488,10 +508,10 @@ function providerView(Row: ProviderRow, Runtime: RuntimeProvider | undefined, Mo
     icon: Row.icon,
     base_url: Row.base_url,
     has_api_key: Row.api_key_ciphertext !== null,
-    key_status: Runtime?.key_status ?? (Row.api_key_ciphertext === null ? 'none' : 'set'),
+    key_status: Runtime?.key_status ?? (Row.api_key_ciphertext === null ? 'none' : 'error'),
     has_headers: Row.headers_ciphertext !== null,
     header_names: Runtime === undefined ? [] : Object.keys(Runtime.headers),
-    headers_status: Runtime?.headers_status ?? (Row.headers_ciphertext === null ? 'none' : 'set'),
+    headers_status: Runtime?.headers_status ?? (Row.headers_ciphertext === null ? 'none' : 'error'),
     query: Row.query,
     options: Row.options,
     enabled: Row.enabled,
@@ -500,6 +520,20 @@ function providerView(Row: ProviderRow, Runtime: RuntimeProvider | undefined, Mo
     model_count: ModelCount,
     created_at: Row.created_at,
     updated_at: Row.updated_at,
+  }
+}
+
+function modelViewFromSnapshot(runtime: RuntimeModelRegistry, Key: string, Fallback: ModelWithProvider) {
+  const Snap = currentConfig(runtime)?.models.find((Item) => Item.key === Key)
+  return modelView(Snap ?? Fallback)
+}
+
+function modelRowView(Row: ModelWithProvider, Snap: RuntimeConfig | null) {
+  const RuntimeModel = Snap?.models.find((Item) => Item.key === Row.id)
+  return {
+    ...modelView(Row),
+    available: RuntimeModel?.available ?? false,
+    unavailable_reason: RuntimeModel?.unavailable_reason ?? null,
   }
 }
 
@@ -522,14 +556,15 @@ function modelView(Model: ModelWithProvider | RuntimeModel) {
 
 function defaultView(Row: DefaultRow, Snap: RuntimeConfig | null) {
   const Key = `${Row.provider_name}:${Row.model_id}`
-  const Model = Snap?.models.find((Item) => Item.key === Key)
+  const Kind = Row.id === 'default' ? 'language' : 'embedding'
+  const Model = Snap?.models.find((Item) => Item.isDefault && Item.kind === Kind) ?? null
   return {
     id: Row.id,
     provider: Row.provider_name,
     model_id: Row.model_id,
     key: Key,
-    kind: Row.id === 'default' ? 'language' : 'embedding',
-    dimensions: Model?.dimensions ?? null,
+    kind: Kind,
+    dimensions: Row.dimensions ?? Model?.dimensions ?? null,
     available: Model?.available ?? false,
     unavailable_reason: Model?.unavailable_reason ?? null,
     updated_at: Row.updated_at,
@@ -585,6 +620,10 @@ function parseBaseUrl(Kind: ProviderKind, Value: unknown, Create: boolean) {
   if (Value === undefined) return { ok: true as const, value: undefined }
   if (typeof Value !== 'string' || !isHttpUrl(Value)) {
     return { ok: false as const, message: 'base_url 必须是 http/https' }
+  }
+  const Parsed = new URL(Value)
+  if (Parsed.username !== '' || Parsed.password !== '') {
+    return { ok: false as const, message: 'base_url 不允许内嵌凭据' }
   }
   return { ok: true as const, value: Value }
 }

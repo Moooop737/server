@@ -9,7 +9,7 @@
  * 取消延迟有下限：parse 与 chunk 是同步的，pg 写入也不吃 signal ⇒ 只能在异步边界上观测到取消，最坏要等当前那一段同步/写事务跑完。
  * 结果码：E_DUPLICATE 查重 / E_CANCELLED 取消 / E_TIMEOUT stage 超时 / E_HASH_MISMATCH 对象字节与归档 hash 不符 / E_RESOURCE_GONE 写入期间资源被删 / E_INGEST_FAILED 其余。
  * 硬约束：Signal 只喂 fetch/embed 这类长操作；fail() 落库改状态绝不复用 Signal（aborted signal 会连"失败留痕"一起杀掉）。
- * 依赖：contracts(类型) / adapter 的门(Repo,EmbeddingHandle,embedChunks,ObjectStoreHandle) / inflight / recipes。
+ * 依赖：contracts(类型) / adapter 的门(Repo,RuntimeModel,embedChunks,ObjectStoreHandle) / inflight / recipes。
  */
 
 import 'reflect-metadata'
@@ -140,7 +140,7 @@ class IngestFactory {
           vectors = await runStage(
             Sink,
             'embed',
-            { chunk_count: plans.length, model_id: embedding.modelId, dimensions: embedding.dimensions },
+            { chunk_count: plans.length, model_id: embedding.model_id, dimensions: embedding.dimensions },
             () => embedChunks(plans.map((p) => p.content), embedding, Signal),
             (Embeddings) => ({ embedding_count: Embeddings.length, dimension: Embeddings[0]?.length ?? null }),
           )
@@ -158,7 +158,7 @@ class IngestFactory {
             () => repo.writeChunksWithEmbeddings(
               Resource.id,
               plans.map((p) => ({ chunk_index: p.chunk_index, content: p.content, start_offset: p.start_offset, end_offset: p.end_offset })),
-              vectors.map((v) => ({ dimension: v.length, model: embedding.modelId, embedding: v })),
+              vectors.map((v) => ({ dimension: v.length, model: embedding.key, embedding: v })),
             ),
             (Count) => ({ chunk_count: Count }),
           )

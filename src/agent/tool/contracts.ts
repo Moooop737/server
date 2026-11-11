@@ -13,16 +13,13 @@
 export type { RetrieveToolInput, RetrievedHit, RetrieveToolOutput, RetrieveToolOptions, ResourceToolInput, ResourceToolOutput, ResourceMeta, ResourceCandidate, ResourceSegment }
 
 import type { ResourceStatus } from '../../adapter/contract'
-import type { SearchOptions } from '../../retrieve/contracts'
 
 interface RetrieveToolOptions {
   trace?: boolean
-  search?: Omit<SearchOptions, 'sink'>
 }
 
 interface RetrieveToolInput {
   prompt: string
-  topK: number
 }
 
 
@@ -44,7 +41,7 @@ interface RetrievedHit {
 
 interface RetrieveToolOutput {
   hits: RetrievedHit[]
-  vectorCount: number // 过阈值后的条数；判「库里没有」用它与 lexicalCount，别用 hits.length（已被 topK 截过）
+  vectorCount: number // 过阈值后的条数；判「库里没有」用它与 lexicalCount，别用 hits.length（已被管线结果节点截过）
   lexicalCount: number
   error: { code: string; message: string } | null // 非 null 时 hits 为空、两个 count 为 0
 }

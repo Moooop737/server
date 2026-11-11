@@ -1,5 +1,5 @@
 /**
- * 由 `npm run db:schema` 生成，含四张 CRUD 表、codebases、trace_stages、四张 eval 表与两张配置表（仅 schema）；timestamptz 用 date 模式。
+ * 由 `npm run db:schema` 生成，含四张 CRUD 表、codebases、trace_stages、四张 eval 表与三张配置表（仅 schema）；timestamptz 用 date 模式。
  * 索引归 dbmate；BM25/向量仍走 search-lexical/search-vector 的裸 SQL。
  * 不要手改。
  */
@@ -163,6 +163,21 @@ export const sessions = pgTable("sessions", {
 	group_name: text(),
 	model: text(),
 });
+
+export const pipeline_defs = pgTable("pipeline_defs", {
+	id: text().primaryKey().notNull(),
+	kind: text().notNull(),
+	version: integer().default(1).notNull(),
+	nodes: jsonb().notNull(),
+	output_node: text(),
+	enabled: boolean().default(true).notNull(),
+	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+}, () => [
+	check("pipeline_defs_kind_check", sql`kind = 'retrieval'::text`),
+	check("pipeline_defs_nodes_array", sql`jsonb_typeof(nodes) = 'array'::text`),
+	check("pipeline_defs_version_positive", sql`version >= 1`),
+]);
 
 export const codebases = pgTable("codebases", {
 	id: uuid().defaultRandom().primaryKey().notNull(),

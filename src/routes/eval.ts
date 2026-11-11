@@ -17,7 +17,7 @@ import { EvalAssembly } from '../eval/assembly'
 import { RetrieveRoute } from './retrieve'
 import { createEndpointTrace } from '../trace/systemtrace/endpoint'
 import { logError } from '../trace/systemtrace/log'
-import { ChatHandle } from '../adapter/contract'
+import { RuntimeModelRegistry, RuntimeRegistryError } from '../adapter/model/runtime-registry'
 import { CONTENT_PREFIX_LENGTH } from '../eval/cases'
 import { EvalRunner } from '../eval/runner'
 import { summarizeResults, summarizeAnswerResults, finalVerdict } from '../eval/metrics'
@@ -26,32 +26,36 @@ import { inferRunMode } from '../eval/mode'
 import { resolveRubric } from '../eval/judge'
 
 import type { EvalAssertion, EvalAssertions, EvalCase, EvalCaseInput, EvalConfig, EvalConfigKind, EvalGold, EvalHumanResult, EvalRun, Repo } from '../adapter/contract'
+import { RuntimeRetrievalRegistry } from '../adapter/contract'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const RUN_CONFIG_KEYS: readonly string[] = ['model', 'k', 'temperature', 'rrf', 'vector_top_k', 'lexical_top_k', 'min_similarity']
+const RUN_CONFIG_KEYS: readonly string[] = ['model', 'temperature']
 const METRIC_CONFIG_KEYS: readonly string[] = ['judge_model', 'rubric', 'metrics']
 
 @injectable()
 class EvalRoute {
   private readonly assembly: EvalAssembly
-  private readonly chat: ChatHandle
   private readonly runner: EvalRunner
+  private readonly registry: RuntimeModelRegistry
+  private readonly retrieval: RuntimeRetrievalRegistry
 
   constructor(
     @inject(EvalAssembly) Assembly: EvalAssembly,
-    @inject(ChatHandle) Chat: ChatHandle,
     @inject(EvalRunner) Runner: EvalRunner,
+    @inject(RuntimeModelRegistry) Registry: RuntimeModelRegistry,
+    @inject(RuntimeRetrievalRegistry) Retrieval: RuntimeRetrievalRegistry,
   ) {
     this.assembly = Assembly
-    this.chat = Chat
     this.runner = Runner
+    this.registry = Registry
+    this.retrieval = Retrieval
   }
 
   build(): Hono {
     const app = new Hono()
     const repo = this.assembly.repo
     const mode = this.assembly.mode
-    const models = () => new Set(this.chat.catalog().map((Item) => Item.id))
+    const models = () => new Set(this.registry.catalog().map((Item) => Item.id))
 
     app.get('/status', async (c) => {
       const reachable = await repo.ping()
@@ -67,11 +71,11 @@ class EvalRoute {
     })
 
     app.use('*', createEndpointTrace(repo))
-    app.route('/retrieve', new RetrieveRoute({ retriever: this.assembly.retriever }, repo).build())
+    app.route('/retrieve', new RetrieveRoute({ retriever: () => this.assembly.retriever(this.retrieval.current().pipeline) }, repo).build())
     buildDatasets(app, repo)
     buildCases(app, repo)
     buildConfigs(app, repo, models)
-    buildRuns(app, { repo, runner: this.runner, embedding: this.assembly.embedding })
+    buildRuns(app, { repo, runner: this.runner, registry: this.registry, retrieval: this.retrieval })
 
     return app
   }
@@ -325,11 +329,12 @@ function buildConfigs(app: Hono, repo: Repo, models: () => Set<string>): Hono {
 interface RunRouteDeps {
   repo: Repo
   runner: EvalRunner
-  embedding: { modelId: string; dimensions: number }
+  registry: RuntimeModelRegistry
+  retrieval: RuntimeRetrievalRegistry
 }
 
 function buildRuns(app: Hono, Deps: RunRouteDeps): Hono {
-  const { repo, runner, embedding } = Deps
+  const { repo, runner, registry, retrieval } = Deps
 
   app.post('/runs', async (c) => {
     const Body = await readObject(c)
@@ -359,14 +364,29 @@ function buildRuns(app: Hono, Deps: RunRouteDeps): Hono {
       const Cases = await repo.listCases(Dataset.id)
       if (Cases.length === 0) return bad(c, 'E_EVAL_DATASET_EMPTY', '数据集没有 case，先添加题目')
 
+      let Embedding
+      try {
+        Embedding = registry.requireEmbeddingDefault()
+      } catch (Err) {
+        if (Err instanceof RuntimeRegistryError) {
+          return c.json({ code: 'E_NO_EMBEDDING_MODEL', message: '未配置可用的默认嵌入模型' }, 409)
+        }
+        throw Err
+      }
+
+      if (Embedding.dimensions === null) {
+        return c.json({ code: 'E_NO_EMBEDDING_MODEL', message: '未配置可用的默认嵌入模型' }, 409)
+      }
+      const Pipeline = retrieval.current()
       const Snapshot = buildSnapshot({
         dataset: Dataset,
         cases: Cases,
         runConfig: RunConfig,
         metricConfig: MetricConfig,
         ...(Mode === undefined ? {} : { mode: Mode }),
-        embedding: { model: embedding.modelId, dimensions: embedding.dimensions },
+        embedding: { model: Embedding.model_id, dimensions: Embedding.dimensions },
         corpus: await repo.resourceCounts(),
+        pipeline: { version: Pipeline.version, nodes: Pipeline.pipeline.nodes, output: Pipeline.pipeline.output ?? null },
       })
       const Run = await repo.createRun({
         dataset_id: Dataset.id,
@@ -696,15 +716,8 @@ function parseConfig(Kind: EvalConfigKind, Value: unknown, Models: Set<string>):
 
   if (Kind === 'run') {
     if (typeof Config.model !== 'string' || !Models.has(Config.model)) return { ok: false, message: 'model 必须是 /models 在册的键' }
-    if (!cappedInt(Config.k)) return { ok: false, message: 'k 需为 1..1000 的整数' }
-    if (!cappedInt(Config.rrf)) return { ok: false, message: 'rrf 需为 1..1000 的整数' }
-    if (!cappedInt(Config.vector_top_k)) return { ok: false, message: 'vector_top_k 需为 1..1000 的整数' }
-    if (!cappedInt(Config.lexical_top_k)) return { ok: false, message: 'lexical_top_k 需为 1..1000 的整数' }
     if (typeof Config.temperature !== 'number' || !Number.isFinite(Config.temperature) || Config.temperature < 0 || Config.temperature > 2) {
       return { ok: false, message: 'temperature 需在 0..2' }
-    }
-    if (typeof Config.min_similarity !== 'number' || !Number.isFinite(Config.min_similarity) || Config.min_similarity < 0 || Config.min_similarity > 1) {
-      return { ok: false, message: 'min_similarity 需在 0..1' }
     }
     return { ok: true, config: Config }
   }
@@ -722,10 +735,6 @@ function parseConfig(Kind: EvalConfigKind, Value: unknown, Models: Set<string>):
     return { ok: false, message: 'metrics 需为非空字符串数组' }
   }
   return { ok: true, config: Config }
-}
-
-function cappedInt(Value: unknown): boolean {
-  return typeof Value === 'number' && Number.isInteger(Value) && Value > 0 && Value <= 1000
 }
 
 function parseHumanScore(Value: unknown): { ok: true; value: number | null } | { ok: false } {

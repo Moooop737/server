@@ -1,4 +1,5 @@
-import type { EmbeddingHandle, Repo, Resource } from '../adapter/contract'
+import type { Repo, Resource } from '../adapter/contract'
+import type { RuntimeModel } from '../adapter/config/runtime'
 import type { StageSink } from '../trace/systemtrace/stage'
 
 // ── 工厂输入：装配规格（无数据）──
@@ -6,7 +7,7 @@ export interface Recipe {
   fetcher: string   // 'http' | 'passthrough' | 'storage'
   parser: string    // 'html' | 'text'
   chunker: string   // 'legacy'
-  embedding: EmbeddingHandle  // 装配层从 model 清单选定的那一行，入库与检索共用同一个
+  embedding: RuntimeModel  // 本次 run 的默认嵌入模型（D18：模型行自带句柄）
   repo: Repo
 }
 

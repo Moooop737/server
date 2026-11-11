@@ -32,8 +32,12 @@ const TAG_BYTES = 16
 function parseSecretKey(Raw: string | undefined): Buffer | null {
   const Value = Raw?.trim() ?? ''
   if (Value === '') return null
-  const Key = Buffer.from(Value, 'base64')
-  if (Key.length !== KEY_BYTES) {
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(Value)) {
+    throw new ConfigSecretError('E_CONFIG_SECRET_KEY', 'CONFIG_SECRET_KEY 不是合法 base64')
+  }
+  const Normalized = Value.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '')
+  const Key = Buffer.from(Normalized, 'base64')
+  if (Key.length !== KEY_BYTES || Key.toString('base64').replace(/=+$/, '') !== Normalized) {
     throw new ConfigSecretError('E_CONFIG_SECRET_KEY', `CONFIG_SECRET_KEY 需为 ${KEY_BYTES} 字节的 base64，实际 ${Key.length} 字节`)
   }
   return Key

@@ -1,13 +1,14 @@
 /**
  * 组件共用工具 —— 只放跨组件复用、且不携带业务状态的纯函数与快照断言。
- * requireEmbedding 是组件内兜底：正常路径执行器已保证 requiresEmbedding 组件拿到快照，这里防绕过执行器的直接调用。
+ * resolveEmbedding 是嵌入模型的唯一解析口：指定 key 走 registry，否则用全局默认；错误统一转成 RetrieverError。
  */
 
-export { requireEmbedding, embedText, listOf, rrf, hashVector }
+export { resolveEmbedding, embedText, listOf, rrf, hashVector }
 
 import { createHash } from 'node:crypto'
 import { embedMany } from 'ai'
 import { RetrieverError } from '../../contracts'
+import { RuntimeRegistryError } from '../../../adapter/model/runtime-registry'
 
 import type { EmbeddingModelV4 } from '@ai-sdk/provider'
 import type { ComponentDeps } from '../pipeline'
@@ -15,11 +16,15 @@ import type { RetrievedChunk } from '../../contracts'
 import type { RuntimeModel } from '../../../adapter/config/runtime'
 import type { RankedItem, RankedList } from './schemas'
 
-function requireEmbedding(Deps: ComponentDeps): RuntimeModel {
-  if (Deps.embedding === null) {
-    throw new RetrieverError('E_NO_EMBEDDING_MODEL', '未配置可用的默认嵌入模型')
+function resolveEmbedding(Deps: ComponentDeps, Key: string | null): RuntimeModel {
+  try {
+    return Key === null
+      ? Deps.registry.requireEmbeddingDefault()
+      : Deps.registry.requireEmbedding(Key)
+  } catch (Err) {
+    if (Err instanceof RuntimeRegistryError) throw new RetrieverError(Err.code, Err.message)
+    throw Err
   }
-  return Deps.embedding
 }
 
 async function embedText(Embedding: RuntimeModel, Text: string, Telemetry: boolean): Promise<number[]> {

@@ -1,9 +1,9 @@
 /**
  * 检索管线执行器 —— 节点 + 具名端口边。装配期按 isSubschema 校验每条边并构造每个节点的 stage：
  * 组件在 create 里解析自己的 config，不合格由组件抛（ZodError 统一包成 E_NODE_CONFIG），不另设校验函数。
- * 运行期按拓扑层并行，复用装配好的 stage；组件参数只认管线 config，调用方不传覆盖。
- * 每次 run 开头取一次嵌入快照：管线含 requiresEmbedding 组件且默认缺失时，跑任何节点前抛 E_NO_EMBEDDING_MODEL；
- * 纯词路管线不要求嵌入。一个输入端口只接一条边；fan-in 靠组件多个输入端口（RRF 的 a / b）。
+ * 运行期按拓扑层并行，复用装配好的 stage；检索参数只认管线 config，调用方只传 query 与可选的模型身份。
+ * 嵌入模型由组件在 run 里解析（端口 / 引脚默认 / 全局默认），执行器不再预取嵌入快照；
+ * 纯词路管线不受影响。一个输入端口只接一条边；fan-in 靠组件多个输入端口（RRF 的 a / b）。
  * 装载 / 保存前用探针 Deps 跑一遍装配即可暴露坏结构、坏边与坏参数。
  */
 
@@ -12,14 +12,11 @@ export type { AssemblyDeps, ComponentDef, ComponentDeps, Stage, PipelineDef, Pip
 
 import { z } from 'zod'
 import { isSubschema } from './schema'
-import { RetrieverError } from '../contracts'
 import { NoopStageSink } from '../../trace/systemtrace/stage'
-import { RuntimeRegistryError } from '../../adapter/model/runtime-registry'
 
 import type { JsonSchema } from './schema'
 import type { Repo } from '../../adapter/contract'
 import type { RuntimeModelRegistry } from '../../adapter/model/runtime-registry'
-import type { RuntimeModel } from '../../adapter/config/runtime'
 import type { StageSink } from '../../trace/systemtrace/stage'
 
 interface Stage {
@@ -29,9 +26,8 @@ interface Stage {
 interface AssemblyDeps {
   repo: Repo
   registry: RuntimeModelRegistry
-  embedding: RuntimeModel | null
   sink: StageSink
-  precomputed?: { text: string; vector: number[] } // A/B 试检索共享的向量（同一 query 只 embed 一次）
+  precomputed?: { text: string; vector: number[]; model_key: string } // A/B 试检索共享（同一 query、同一模型才复用）
 }
 
 interface ComponentDeps extends AssemblyDeps {
@@ -41,7 +37,6 @@ interface ComponentDeps extends AssemblyDeps {
 interface ComponentDef {
   name: string
   description?: string
-  requiresEmbedding?: boolean
   input: z.ZodType
   output: z.ZodType
   config?: z.ZodType
@@ -194,22 +189,15 @@ async function executePipeline(
   Def: PipelineDef,
   Components: Map<string, ComponentDef>,
   Deps: ExecuteDeps,
-  Input: { query: string; embedding?: { text: string; vector: number[] } },
+  Input: {
+    query: string
+    model?: string
+    embedding?: { text: string; vector: number[]; model_key: string }
+  },
 ): Promise<PipelineRun> {
-  const NeedsEmbedding = Def.nodes.some((Node) => Components.get(Node.component)?.requiresEmbedding === true)
-  let Embedding: RuntimeModel | null = null
-  if (NeedsEmbedding) {
-    try {
-      Embedding = Deps.registry.requireEmbeddingDefault()
-    } catch (Err) {
-      if (Err instanceof RuntimeRegistryError) throw new RetrieverError(Err.code, Err.message)
-      throw Err
-    }
-  }
   const RunDeps: AssemblyDeps = {
     repo: Deps.repo,
     registry: Deps.registry,
-    embedding: Embedding,
     sink: Deps.sink ?? NoopStageSink,
     ...(Input.embedding === undefined ? {} : { precomputed: Input.embedding }),
   }

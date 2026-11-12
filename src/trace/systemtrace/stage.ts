@@ -11,7 +11,6 @@ export type { StageName, StageRecord, StageSink }
 import { logError } from './log'
 
 type StageName =
-  | 'dimension_check'
   | 'embed_query'
   | 'vector_recall'
   | 'bm25_recall'

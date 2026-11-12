@@ -9,7 +9,7 @@
  * 所以两条候选查询交出 ChunkCandidate，retrieve/pipeline/ 的组件补上 score 再交给结果组件。
  * RuntimeRetrievalRegistry 是检索运行时的唯一来源：快照存当前管线（装配探针校验，坏管线 reload 留旧快照）；
  * retriever() 无参，repo / 模型注册表在构造时注入，调用方不传依赖。默认嵌入的解析仍统一走 RuntimeModelRegistry。
- * 嵌入默认的解析与 E_NO_EMBEDDING_MODEL 只在 RuntimeModelRegistry（D17），本门不再有 EmbeddingHandle。
+ * 嵌入模型解析（全局默认 / 按 key）与 E_NO_EMBEDDING_MODEL 只在 RuntimeModelRegistry（D17），本门不再有 EmbeddingHandle。
  * 维度来自 models.dimensions（默认行指向的嵌入模型行），不再有 env 的 EMBEDDING_DIMENSIONS。
  * 三个 Ollama 探针是原生只读 HTTP（/api/version、/api/tags、/api/ps），不是 SDK，只是服务商接入的一部分。
  * 方法级前置条件（调用方只读这一份，不必开 repo/ 各文件）：
@@ -21,7 +21,7 @@
  * · markResourceUploaded：对象已 stat 后确认大小，从 uploading/uploaded/upload_failed/process_failed/ready 转 uploaded（后两者是重试入口）。
  * · restoreResource：只接软删行，清 deleted_at 后回到 uploaded；不是软删行返回 null。
  * · markStaleOnBoot：processing → process_failed，超过 24h 的 uploading → upload_failed。
- * · dimensionsInStore：数的是 embeddings 的维度事实，与行是否软删无关；库不可达时抛，由调用方处置（检索层每请求现查一次，见 retrieve/pipeline/components.ts）。
+ * · dimensionsInStore：数的是 embeddings 的维度事实，与行是否软删无关；库不可达时抛，由调用方处置（检索层每请求现查一次，见 retrieve/pipeline/components/vector-recall.ts）。
  * · updateResourceStatus / 写入路径都自带 `deleted_at IS NULL` 谓词，不由调用方拼。
  * · trace 两条只写 traces 公共行；insert/finish 失败不影响业务，吞错与日志归调用方（见 trace/systemtrace/endpoint.ts）。
  * 唯一例外：`connection/pool.ts` 的 createDbPool 被三个 gitignore 的对账脚本直接 import（它们要一条独立连接做 raw 校数），不经本门。
@@ -31,13 +31,15 @@
  * 实体形状不再有跨层共享盒（原 `types/` 已删）：别盒要用哪一位，由本门逐个点名交出（现交 Resource 与四张 Drizzle 表）。
  */
 
-export { RuntimeRetrievalRegistry, RetrievalRegistryError, PostgresRepo, EvalPostgresRepo, PostgresCodebaseRepo, PostgresConfigRepo, PostgresPipelineRepo, ObjectStoreHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, embedChunks, assembleRetriever, RETRIEVAL_COMPONENTS }
+export { RuntimeRetrievalRegistry, RetrievalRegistryError, PostgresRepo, EvalPostgresRepo, PostgresCodebaseRepo, PostgresConfigRepo, PostgresPipelineRepo, PostgresSwarmRepo, PostgresMachineRepo, ObjectStoreHandle, ollamaHealthCheck, ollamaModelList, ollamaStatusList, embedChunks, assembleRetriever, RETRIEVAL_COMPONENTS }
 export { resources, sessions, messages, traces } from './repo/orm/schema'
 export { listChatSessions, getChatTrace, getSessionTranscript } from './repo/observability'
 export { ObjectStoreError } from './storage/object-store'
 export type { Repo, CodebaseRepo, ChunkCandidate, Resource, ResourceStatus, ResourceCounts, Message, Trace, TraceStage, TraceStageInput, TracePayloads, TracePayloadOmitReason }
 export type { ProviderKind, ModelKind, ProviderRow, ModelWithProvider, DefaultRow, ConfigSnapshot, CreateProviderInput, CreateModelInput, UpdateModelInput } from './repo/config'
 export type { PipelineRow, PipelineSummaryRow } from './repo/pipeline'
+export type { SwarmRow, SwarmSummaryRow } from './repo/swarm'
+export type { MachineRow, MachineSummaryRow, MachineInput } from './repo/machine'
 export type { RetrievalSnapshot, RetrievalStatus, RetrievalReloadResult }
 export type { EvalDataset, EvalCase, EvalGold, EvalAssertion, EvalAssertions, EvalConfig, EvalConfigKind, EvalCaseInput } from './repo/eval'
 export type { EvalRun, EvalRunStatus, EvalRunSnapshot, EvalRunCaseSnapshot, EvalRunResult, EvalHumanResult, EvalVerdict, EvalAssertionCheck, EvalAssertionResult, EvalJudgeResult, EvalCitation } from './repo/eval-run'
@@ -78,6 +80,8 @@ import {
 } from './repo/eval-run'
 import { PostgresConfigRepo } from './repo/config'
 import { PostgresPipelineRepo } from './repo/pipeline'
+import { PostgresSwarmRepo } from './repo/swarm'
+import { PostgresMachineRepo } from './repo/machine'
 import { ollamaHealthCheck, ollamaModelList, ollamaStatusList } from './connection/ollama'
 import { RuntimeModelRegistry } from './model/runtime-registry'
 import { embedChunks } from './model/embed-chunks'
@@ -736,7 +740,6 @@ class RuntimeRetrievalRegistry {
     assemblePipeline(Def, RETRIEVAL_COMPONENTS, {
       repo: this.repo,
       registry: this.models,
-      embedding: null,
       sink: NoopStageSink,
     })
     this.generation += 1

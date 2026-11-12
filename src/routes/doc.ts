@@ -29,6 +29,8 @@ const Tags = [
   { name: 'Observability', description: '对话观测：列表读本地库，观测内容按 langfuse_trace_id 懒加载' },
   { name: 'Health', description: '服务探针' },
   { name: 'Config', description: '供应商 / 模型 / 默认模型配置；写接口保存后热更新' },
+  { name: 'Swarm', description: 'swarm 图定义：构成、校验、入库；本版不含运行' },
+  { name: 'Machine', description: 'machine 定义：绑定 swarm 图与启用态；本版不含装配与执行' },
 ]
 
 const Json = (Schema: object) => ({ 'application/json': { schema: Schema } })
@@ -1080,6 +1082,94 @@ const CustomPaths = {
       },
     },
   },
+  '/swarm': {
+    get: {
+      tags: ['Swarm'],
+      operationId: 'listSwarms',
+      summary: '图清单（id / version / enabled）',
+      responses: {
+        200: Ok('图清单', {
+          type: 'object',
+          required: ['swarms'],
+          properties: {
+            swarms: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['id', 'version', 'enabled'],
+                properties: {
+                  id: { type: 'string' },
+                  version: { type: 'integer' },
+                  enabled: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        }),
+      },
+    },
+  },
+  '/swarm/{id}': {
+    get: {
+      tags: ['Swarm'],
+      operationId: 'readSwarm',
+      summary: '按 id 读取完整图定义',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: '图标识', schema: { type: 'string' } },
+      ],
+      responses: {
+        200: Ok('图定义与版本', {
+          type: 'object',
+          required: ['swarm_id', 'version', 'enabled', 'graph', 'created_at', 'updated_at'],
+          properties: {
+            swarm_id: { type: 'string' },
+            version: { type: 'integer' },
+            enabled: { type: 'boolean' },
+            graph: Ref('SwarmGraph'),
+            created_at: { type: 'string', format: 'date-time' },
+            updated_at: { type: 'string', format: 'date-time' },
+          },
+        }),
+        404: Err('图不存在'),
+      },
+    },
+    put: {
+      tags: ['Swarm'],
+      operationId: 'replaceSwarm',
+      summary: '整图替换（校验通过才入库；首写 v1，之后 version+1）',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: '图标识', schema: { type: 'string' } },
+      ],
+      requestBody: { required: true, content: Json(Ref('SwarmGraph')) },
+      responses: {
+        200: Ok('保存后的 id 与版本', {
+          type: 'object',
+          required: ['swarm_id', 'version'],
+          properties: { swarm_id: { type: 'string' }, version: { type: 'integer' } },
+        }),
+        400: Err('图不合法（E_SWARM_INVALID / E_SWARM_CYCLE / E_SCHEMA_UNSUPPORTED）'),
+      },
+    },
+  },
+  '/swarm/validate': {
+    post: {
+      tags: ['Swarm'],
+      operationId: 'validateSwarm',
+      summary: '草稿图预检，不落库',
+      requestBody: { required: true, content: Json(Ref('SwarmGraph')) },
+      responses: {
+        200: Ok('校验结果 { ok } 或 { ok:false, errors }', {
+          type: 'object',
+          required: ['ok'],
+          properties: {
+            ok: { type: 'boolean' },
+            errors: { type: 'array', items: { type: 'object' } },
+          },
+        }),
+        400: Err('请求体不合法'),
+      },
+    },
+  },
   '/health': {
     get: {
       tags: ['Health'],
@@ -1091,9 +1181,211 @@ const CustomPaths = {
       },
     },
   },
+  '/machine': {
+    get: {
+      tags: ['Machine'],
+      operationId: 'listMachines',
+      summary: 'machine 清单（id / name / swarm_id / enabled / version）',
+      responses: {
+        200: Ok('machine 清单', {
+          type: 'object',
+          required: ['machines'],
+          properties: {
+            machines: { type: 'array', items: Ref('MachineSummary') },
+          },
+        }),
+      },
+    },
+  },
+  '/machine/preflight': {
+    post: {
+      tags: ['Machine'],
+      operationId: 'preflightMachine',
+      summary: '装配预检：已存图或草稿整图 → plan / 错误；不执行、不写库、不写 trace',
+      requestBody: { required: true, content: Json(Ref('MachinePreflightInput')) },
+      responses: {
+        200: Ok('预检结果 { ok, plan } 或 { ok:false, errors }', {
+          type: 'object',
+          required: ['ok'],
+          properties: {
+            ok: { type: 'boolean' },
+            plan: { type: 'object' },
+            errors: { type: 'array', items: { type: 'object' } },
+          },
+        }),
+        400: Err('请求体不合法'),
+      },
+    },
+  },
+  '/machine/{id}/run': {
+    post: {
+      tags: ['Machine'],
+      operationId: 'runMachine',
+      summary: '同步运行 machine 绑定的单 worker 图；不写会话、不流式',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: 'machine 标识', schema: { type: 'string' } },
+      ],
+      requestBody: { required: true, content: Json(Ref('MachineRunInput')) },
+      responses: {
+        200: Ok('回答与运行摘要', Ref('MachineRunResult')),
+        400: Err('query 为空或请求体不合法'),
+        404: Err('machine 不存在'),
+        409: Err('machine 未启用 / 图未通过编译 / 运行形状不支持'),
+        502: Err('模型 provider 失败'),
+        500: Err('未预期运行失败'),
+      },
+    },
+  },
+  '/machine/{id}': {
+    get: {
+      tags: ['Machine'],
+      operationId: 'readMachine',
+      summary: '按 id 读取 machine 定义',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: 'machine 标识', schema: { type: 'string' } },
+      ],
+      responses: {
+        200: Ok('machine 定义与版本', {
+          type: 'object',
+          required: ['machine_id', 'name', 'swarm_id', 'enabled', 'version', 'created_at', 'updated_at'],
+          properties: {
+            machine_id: { type: 'string' },
+            name: { type: 'string' },
+            swarm_id: { type: 'string' },
+            enabled: { type: 'boolean' },
+            version: { type: 'integer' },
+            created_at: { type: 'string', format: 'date-time' },
+            updated_at: { type: 'string', format: 'date-time' },
+          },
+        }),
+        404: Err('machine 不存在'),
+      },
+    },
+    put: {
+      tags: ['Machine'],
+      operationId: 'replaceMachine',
+      summary: '整机替换（绑定图与节点配置校验通过才入库；首写 v1，之后 version+1）',
+      parameters: [
+        { name: 'id', in: 'path', required: true, description: 'machine 标识', schema: { type: 'string' } },
+      ],
+      requestBody: { required: true, content: Json(Ref('MachineInput')) },
+      responses: {
+        200: Ok('保存后的 id 与版本', {
+          type: 'object',
+          required: ['machine_id', 'version'],
+          properties: { machine_id: { type: 'string' }, version: { type: 'integer' } },
+        }),
+        400: Err('字段 / 绑定图 / 节点配置不合法（E_BAD_MACHINE / E_MACHINE_SWARM_NOT_FOUND / E_MACHINE_NODE_CONFIG）'),
+      },
+    },
+  },
 }
 
 const CustomSchemas = {
+  SwarmNode: {
+    type: 'object',
+    required: ['id', 'kind'],
+    properties: {
+      id: { type: 'string' },
+      kind: { type: 'string', enum: ['worker', 'retriever', 'kb', 'connector'] },
+      config: { type: 'object', additionalProperties: true },
+      position: {
+        type: 'object',
+        description: '画布坐标；随节点存库，结构校验不看',
+        properties: { x: { type: 'number' }, y: { type: 'number' } },
+      },
+    },
+  },
+  SwarmEdgeRef: {
+    type: 'object',
+    required: ['node', 'port'],
+    properties: { node: { type: 'string' }, port: { type: 'string' } },
+  },
+  SwarmEdge: {
+    type: 'object',
+    required: ['id', 'from', 'to'],
+    properties: {
+      id: { type: 'string' },
+      from: Ref('SwarmEdgeRef'),
+      to: Ref('SwarmEdgeRef'),
+    },
+  },
+  SwarmGraph: {
+    type: 'object',
+    required: ['nodes', 'edges', 'output_node'],
+    properties: {
+      nodes: { type: 'array', items: Ref('SwarmNode') },
+      edges: { type: 'array', items: Ref('SwarmEdge') },
+      output_node: { type: 'string' },
+    },
+  },
+  MachineSummary: {
+    type: 'object',
+    required: ['id', 'name', 'swarm_id', 'enabled', 'version'],
+    properties: {
+      id: { type: 'string' },
+      name: { type: 'string' },
+      swarm_id: { type: 'string' },
+      enabled: { type: 'boolean' },
+      version: { type: 'integer' },
+    },
+  },
+  MachineInput: {
+    type: 'object',
+    required: ['name', 'swarm_id', 'enabled'],
+    properties: {
+      name: { type: 'string', maxLength: 80 },
+      swarm_id: { type: 'string' },
+      enabled: { type: 'boolean' },
+    },
+  },
+  MachinePreflightInput: {
+    type: 'object',
+    required: ['swarm_id'],
+    properties: {
+      swarm_id: { type: 'string' },
+      graph: Ref('SwarmGraph'),
+    },
+  },
+  MachineRunInput: {
+    type: 'object',
+    required: ['query'],
+    properties: { query: { type: 'string' } },
+  },
+  MachineRunToolCall: {
+    type: 'object',
+    required: ['step', 'name', 'input', 'output'],
+    properties: {
+      step: { type: 'integer' },
+      name: { type: 'string' },
+      input: {},
+      output: {},
+    },
+  },
+  MachineRunUsage: {
+    type: 'object',
+    required: ['input_tokens', 'output_tokens', 'total_tokens'],
+    properties: {
+      input_tokens: { type: 'integer' },
+      output_tokens: { type: 'integer' },
+      total_tokens: { type: 'integer' },
+    },
+  },
+  MachineRunResult: {
+    type: 'object',
+    required: ['machine_id', 'swarm_id', 'swarm_version', 'model_key', 'answer', 'steps', 'finish_reason', 'tool_calls', 'usage'],
+    properties: {
+      machine_id: { type: 'string' },
+      swarm_id: { type: 'string' },
+      swarm_version: { type: ['integer', 'null'] },
+      model_key: { type: 'string' },
+      answer: { type: 'string' },
+      steps: { type: 'integer' },
+      finish_reason: { type: 'string' },
+      tool_calls: { type: 'array', items: Ref('MachineRunToolCall') },
+      usage: Ref('MachineRunUsage'),
+    },
+  },
   ConfigProvider: {
     type: 'object',
     required: ['id', 'name', 'kind', 'icon', 'base_url', 'has_api_key', 'key_status', 'has_headers', 'header_names', 'headers_status', 'query', 'options', 'enabled', 'available', 'unavailable_reason', 'model_count', 'created_at', 'updated_at'],

@@ -2,7 +2,7 @@
  * /config/retrieval —— 检索管线定义的读取、整图替换与试检索；裸 Hono，不进 hono-crud。
  * PUT 与 /validate 都先过装配探针（组件自己 parse config）：坏结构 / 坏边 / 坏参数在写库前被挡。
  * PUT 成功写库（version+1）后 reload，返回 reload_ok 与 generation；reload 失败保留旧快照。
- * /test 按 pipeline_id（默认 default）指名跑当前管线，可带 draft 做 A/B：同一 query 只 embed 一次（两侧都有嵌入节点时），
+ * /test 按 pipeline_id（默认 default）指名跑当前管线，可带 draft 做 A/B：同一 query、同一模型只 embed 一次（两侧都有嵌入节点时），
  *   不写 trace_stages（Noop 脱敏 sink 之外无旁路）。请求体不进 traces.payloads（/config 前缀已豁免）。
  */
 
@@ -174,11 +174,11 @@ class ConfigRetrievalRoute {
       if (Row.output_node === null) return bad(c, 'E_PIPELINE_INVALID', '管线缺少输出节点')
       const Named: PipelineDef = { nodes: Row.nodes, output: Row.output_node }
 
-      let Precomputed: { text: string; vector: number[] } | undefined
+      let Precomputed: { text: string; vector: number[]; model_key: string } | undefined
       if (Draft !== undefined && hasEmbed(Named) && hasEmbed(Draft)) {
         try {
           const Snapshot = this.models.requireEmbeddingDefault()
-          Precomputed = { text: Query, vector: await embedText(Snapshot, Query, false) }
+          Precomputed = { text: Query, model_key: Snapshot.key, vector: await embedText(Snapshot, Query, false) }
         } catch {
           /* 缺嵌入模型时不共享：两侧各自按自己的路径报错 */
           Precomputed = undefined
@@ -204,7 +204,6 @@ class ConfigRetrievalRoute {
     assemblePipeline(Def, RETRIEVAL_COMPONENTS, {
       repo: this.probeRepo,
       registry: this.models,
-      embedding: null,
       sink: NoopStageSink,
     })
   }
@@ -235,7 +234,7 @@ function hasEmbed(Def: PipelineDef): boolean {
 async function runSide(
   Def: PipelineDef,
   Query: string,
-  Precomputed: { text: string; vector: number[] } | undefined,
+  Precomputed: { text: string; vector: number[]; model_key: string } | undefined,
   Repo: Repo,
   Models: RuntimeModelRegistry,
 ) {

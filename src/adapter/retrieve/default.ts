@@ -26,6 +26,7 @@ function assembleRetriever(Def: PipelineDef, Components: Map<string, ComponentDe
     async search(Query: string, Options?: SearchOptions): Promise<RetrievalResult> {
       const Trimmed = Query.trim()
       if (!Trimmed) throw new RetrieverError('E_EMPTY_QUERY', '提问不能为空')
+      const Model = Options?.model?.trim()
       const Run = await executePipeline(
         Def,
         Components,
@@ -34,7 +35,10 @@ function assembleRetriever(Def: PipelineDef, Components: Map<string, ComponentDe
           registry: Deps.registry,
           sink: Options?.sink ?? NoopStageSink,
         },
-        { query: Trimmed },
+        {
+          query: Trimmed,
+          ...(Model === undefined || Model === '' ? {} : { model: Model }),
+        },
       )
       return Run.output as unknown as RetrievalResult
     },

@@ -1,5 +1,6 @@
 /**
- * vector_recall —— 按查询向量召回；只用当前模型键的向量，相似度阈值是本组件参数。
+ * vector_recall —— 先自检当前模型名下没有异维向量，再按查询向量召回；相似度阈值是本组件参数。
+ * 原 dimension_check 并入本组件：检查与召回同在一个 stage 内，混维即 E_DIMENSION_MISMATCH，拒绝召回。
  * 阈值过滤留在组件（写进 SQL 会挡 HNSW 的 top-k 通道）；sources.count 是过阈值后的条数。
  */
 
@@ -7,6 +8,7 @@ export { VectorRecall }
 
 import { z } from 'zod'
 import { runStage } from '../../../trace/systemtrace/stage'
+import { RetrieverError } from '../../contracts'
 import { EmbeddingSchema, RankedListSchema } from './schemas'
 import { hashVector, listOf } from './shared'
 
@@ -21,7 +23,7 @@ const VectorRecallConfig = z.strictObject({
 
 const VectorRecall: ComponentDef = {
   name: 'vector_recall',
-  description: '按查询向量召回；只用当前模型键的向量，相似度阈值是本组件参数',
+  description: '先自检当前模型名下无混维，再按查询向量召回；阈值是本组件参数',
   input: z.object({ embedding: EmbeddingSchema }),
   output: z.object({ list: RankedListSchema }),
   config: VectorRecallConfig,
@@ -30,7 +32,7 @@ const VectorRecall: ComponentDef = {
     return {
       async run(Input) {
         const Embedding = Input.embedding as Embedding
-        const Hits = await runStage(
+        const Checked = await runStage(
           Deps.sink,
           'vector_recall',
           {
@@ -41,12 +43,33 @@ const VectorRecall: ComponentDef = {
             model_key: Embedding.model_key,
             node_id: Deps.nodeId,
           },
-          () => Deps.repo.vectorCandidates(Embedding.vector, C.top_k, Embedding.dimension, Embedding.model_key),
-          (Candidates) => ({
-            candidates: Candidates.map((Hit, Index) => ({ chunk_id: Hit.chunk.id, similarity: Hit.similarity, rank: Index + 1 })),
+          async () => {
+            const Stored = await Deps.repo.dimensionsInStore(Embedding.model_key)
+            const Foreign = Stored.filter((Dim) => Dim !== Embedding.dimension)
+            if (Foreign.length > 0) {
+              throw new RetrieverError(
+                'E_DIMENSION_MISMATCH',
+                `当前嵌入模型 ${Embedding.model_key} 下存在 ${Foreign.join('/')} 维向量，与检索维度 ${Embedding.dimension} 不符，拒绝作答`,
+              )
+            }
+            const Candidates = await Deps.repo.vectorCandidates(
+              Embedding.vector,
+              C.top_k,
+              Embedding.dimension,
+              Embedding.model_key,
+            )
+            return { stored_dimensions: Stored, candidates: Candidates }
+          },
+          (Output) => ({
+            stored_dimensions: Output.stored_dimensions,
+            candidates: Output.candidates.map((Hit, Index) => ({
+              chunk_id: Hit.chunk.id,
+              similarity: Hit.similarity,
+              rank: Index + 1,
+            })),
           }),
         )
-        const Items: RetrievedChunk[] = Hits
+        const Items: RetrievedChunk[] = Checked.candidates
           .filter((Hit) => Hit.similarity !== null && Hit.similarity >= C.min_similarity)
           .map((Hit) => ({ ...Hit, score: 0 }))
         return { list: listOf('vector', Items) }

@@ -1,10 +1,10 @@
 /**
- * 由 `npm run db:schema` 生成，含四张 CRUD 表、codebases、trace_stages、四张 eval 表与三张配置表（仅 schema）；timestamptz 用 date 模式。
+ * 由 `npm run db:schema` 生成，含四张 CRUD 表、codebases、trace_stages、四张 eval 表与五张配置表（仅 schema）；timestamptz 用 date 模式。
  * 索引归 dbmate；BM25/向量仍走 search-lexical/search-vector 的裸 SQL。
  * 不要手改。
  */
 
-import { pgTable, check, uuid, text, jsonb, timestamp, uniqueIndex, bigint, unique, boolean, foreignKey, integer, pgEnum } from "drizzle-orm/pg-core"
+import { pgTable, check, uuid, text, jsonb, timestamp, integer, boolean, uniqueIndex, bigint, unique, foreignKey, pgEnum } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
 export const resource_status = pgEnum("resource_status", ['uploading', 'uploaded', 'processing', 'ready', 'upload_failed', 'process_failed'])
@@ -21,6 +21,22 @@ export const eval_configs = pgTable("eval_configs", {
 	check("eval_configs_kind_check", sql`kind = ANY (ARRAY['run'::text, 'metric'::text])`),
 	check("eval_configs_name_nonempty", sql`btrim(name) <> ''::text`),
 	check("eval_configs_config_object", sql`jsonb_typeof(config) = 'object'::text`),
+]);
+
+export const swarm_defs = pgTable("swarm_defs", {
+	id: text().primaryKey().notNull(),
+	version: integer().default(1).notNull(),
+	nodes: jsonb().notNull(),
+	edges: jsonb().notNull(),
+	output_node: text().notNull(),
+	enabled: boolean().default(true).notNull(),
+	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+}, () => [
+	check("swarm_defs_nodes_array", sql`jsonb_typeof(nodes) = 'array'::text`),
+	check("swarm_defs_edges_array", sql`jsonb_typeof(edges) = 'array'::text`),
+	check("swarm_defs_version_positive", sql`version >= 1`),
+	check("swarm_defs_output_node_nonempty", sql`length(btrim(output_node)) > 0`),
 ]);
 
 export const resources = pgTable("resources", {
@@ -280,4 +296,24 @@ export const eval_runs = pgTable("eval_runs", {
 	check("eval_runs_results_array", sql`jsonb_typeof(results) = 'array'::text`),
 	check("eval_runs_duration_nonnegative", sql`(duration_ms IS NULL) OR (duration_ms >= 0)`),
 	check("eval_runs_human_results_array", sql`jsonb_typeof(human_results) = 'array'::text`),
+]);
+
+export const machine_defs = pgTable("machine_defs", {
+	id: text().primaryKey().notNull(),
+	name: text().notNull(),
+	swarm_id: text().notNull(),
+	enabled: boolean().default(true).notNull(),
+	version: integer().default(1).notNull(),
+	created_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+	updated_at: timestamp({ withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+}, (table) => [
+	foreignKey({
+			columns: [table.swarm_id],
+			foreignColumns: [swarm_defs.id],
+			name: "machine_defs_swarm_id_fkey"
+		}).onDelete("restrict"),
+	check("machine_defs_id_nonempty", sql`length(btrim(id)) > 0`),
+	check("machine_defs_name_nonempty", sql`length(btrim(name)) > 0`),
+	check("machine_defs_swarm_id_nonempty", sql`length(btrim(swarm_id)) > 0`),
+	check("machine_defs_version_positive", sql`version >= 1`),
 ]);

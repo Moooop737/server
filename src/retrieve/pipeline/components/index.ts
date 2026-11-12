@@ -7,8 +7,8 @@ export { RETRIEVAL_COMPONENTS }
 export { ChunkSchema, RankedItemSchema, SourceCountSchema, RankedListSchema, EmbeddingSchema } from './schemas'
 export type { RankedItem, RankedList, Embedding } from './schemas'
 
+import { InputNode } from './input'
 import { QuerySource } from './query-source'
-import { DimensionCheck } from './dimension-check'
 import { EmbedQuery } from './embed-query'
 import { VectorRecall } from './vector-recall'
 import { Bm25Recall } from './bm25-recall'
@@ -18,8 +18,8 @@ import { Result } from './result'
 import type { ComponentDef } from '../pipeline'
 
 const RETRIEVAL_COMPONENTS = new Map<string, ComponentDef>([
+  [InputNode.name, InputNode],
   [QuerySource.name, QuerySource],
-  [DimensionCheck.name, DimensionCheck],
   [EmbedQuery.name, EmbedQuery],
   [VectorRecall.name, VectorRecall],
   [Bm25Recall.name, Bm25Recall],

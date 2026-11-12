@@ -1,7 +1,7 @@
 /**
  * 检索编排层对外契约 —— Retriever / RetrievalResult / RetrievedChunk / SearchOptions。
  * 装配与执行细节住 retrieve/pipeline/；本文件只留路由、工具、eval 共用的可执行形状。
- * 检索参数只认管线自身 config：调用方不传覆盖，SearchOptions 只剩观测 sink。
+ * 检索参数只认管线自身 config；调用方只可传模型身份（执行身份，不是调参）与观测 sink。
  */
 
 export { RetrieverError }
@@ -36,4 +36,5 @@ interface Retriever {
 
 interface SearchOptions {
   sink?: StageSink
+  model?: string // 嵌入模型键 provider:model_id；不传则走管线引脚默认 / 全局默认
 }

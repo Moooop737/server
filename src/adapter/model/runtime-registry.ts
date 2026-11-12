@@ -144,6 +144,20 @@ class RuntimeModelRegistry {
     return Default
   }
 
+  requireEmbedding(Key: string): RuntimeModel {
+    const Model = this.current().config.models.find((Item) => Item.key === Key && Item.kind === 'embedding')
+    if (Model === undefined) {
+      throw new RuntimeRegistryError('E_NO_EMBEDDING_MODEL', `未找到嵌入模型: ${Key}`)
+    }
+    if (!Model.available || Model.model === null) {
+      throw new RuntimeRegistryError('E_NO_EMBEDDING_MODEL', `嵌入模型不可用: ${Key}`)
+    }
+    if (Model.dimensions === null) {
+      throw new RuntimeRegistryError('E_NO_EMBEDDING_MODEL', `嵌入模型缺少 dimensions: ${Key}`)
+    }
+    return Model
+  }
+
   private async build(): Promise<RuntimeSnapshot> {
     const Config = await this.loader.load()
     const Providers = buildProviderHandles(Config.providers)

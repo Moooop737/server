@@ -15,6 +15,8 @@ import { ChatRoute } from './routes/chat'
 import { ModelsRoute } from './routes/models'
 import { ConfigRoute } from './routes/config'
 import { ConfigRetrievalRoute } from './routes/config-retrieval'
+import { SwarmRoute } from './routes/swarm'
+import { MachineRoute } from './routes/machine'
 import { EvalRoute } from './routes/eval'
 import { EvalAssembly } from './eval/assembly'
 import { SessionsRoute } from './routes/sessions'
@@ -89,6 +91,8 @@ void (async () => {
     app.route('/models', container.resolve(ModelsRoute).build())
     app.route('/config', container.resolve(ConfigRoute).build())
     app.route('/config/retrieval', container.resolve(ConfigRetrievalRoute).build())
+    app.route('/swarm', container.resolve(SwarmRoute).build())
+    app.route('/machine', container.resolve(MachineRoute).build())
     await registerAllCrud(app)
     app.route('/doc', createDocRoute(router, `http://${config.host}:${config.port}`))
 
